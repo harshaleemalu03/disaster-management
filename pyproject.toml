@@ -5,11 +5,17 @@ description = "OpenEnv Disaster Response Coordination System"
 authors = [
     {name = "Harshalee Malu"}
 ]
+requires-python = ">=3.10"
+
 dependencies = [
     "fastapi",
     "uvicorn",
-    "pydantic"
+    "pydantic",
+    "openenv==0.1.13"
 ]
+
+[project.scripts]
+server = "server:app"
 
 [build-system]
 requires = ["setuptools", "wheel"]
