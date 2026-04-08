@@ -1,0 +1,16 @@
+[project]
+name = "openenv-disaster-response"
+version = "0.1.0"
+description = "OpenEnv Disaster Response Coordination System"
+authors = [
+    {name = "Harshalee Malu"}
+]
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic"
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
