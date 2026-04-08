@@ -1,7 +1,7 @@
 <div align="center">
 
 # 🚨 Disaster Response Coordination System
-### OpenEnv v2.1 — Hackathon Submission
+### OpenEnv Hackathon Submission
 
 *High-fidelity AI environment for emergency dispatch coordination*
 *Real travel delays · Fire cascade spread · Fairness-aware dispatch · Live visualization*
