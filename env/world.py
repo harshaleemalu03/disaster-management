@@ -190,12 +190,17 @@ def build_html_view(
                 tooltip += label + "&#10;"
 
             title_attr = f'title="{tooltip.strip()}"' if tooltip else ""
+
+            empty_cell = '<span style="opacity:0.15">·</span>'
+            cell_content = content if content else empty_cell
+
             cells_html.append(
-                f'<td {title_attr} style="width:{cell_size}px;height:{cell_size}px;'
-                f'background:{bg};border:1px solid {border};text-align:center;'
-                f'vertical-align:middle;cursor:default;border-radius:4px">'
-                f'{content or "<span style=\'opacity:0.15\'>·</span>"}</td>'
+            f'<td {title_attr} style="width:{cell_size}px;height:{cell_size}px;'
+            f'background:{bg};border:1px solid {border};text-align:center;'
+            f'vertical-align:middle;cursor:default;border-radius:4px">'
+            f'{cell_content}</td>'
             )
+
         table_rows.append(f"<tr>{''.join(cells_html)}</tr>")
 
     legend_items = [
