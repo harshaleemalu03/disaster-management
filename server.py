@@ -1,13 +1,11 @@
 """
 OpenEnv HTTP Server v2.1 — Disaster Response Coordination System
-================================================================
-FastAPI server implementing the full OpenEnv REST interface.
 """
 
 from __future__ import annotations
 
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,17 +51,25 @@ class StepRequest(_PB):
 
 # ── CORE ───────────────────────────────────────────────────
 
+# ✅ FIXED: body is OPTIONAL
 @app.post("/reset")
-def reset(req: ResetRequest):
+def reset(req: Optional[ResetRequest] = None):
+    if req is None:
+        req = ResetRequest()  # default values
+
     if req.task_id not in VALID_TASKS:
-        raise HTTPException(400, f"Invalid task_id")
+        raise HTTPException(400, "Invalid task_id")
 
     sid = str(uuid.uuid4())
     env = DisasterResponseEnv(task_id=req.task_id, seed=req.seed)
     obs = env.reset()
     _sessions[sid] = env
 
-    return {"session_id": sid, "observation": obs.model_dump()}
+    return {
+        "session_id": sid,
+        "task_id": req.task_id,
+        "observation": obs.model_dump(),
+    }
 
 @app.post("/step")
 def step(req: StepRequest):
@@ -95,9 +101,12 @@ def grade(session_id: str):
         raise HTTPException(404, "Session not found")
 
     result = env.grade()
-    return {"score": result.grader_score, "details": result.model_dump()}
+    return {
+        "grader_score": result.grader_score,
+        "details": result.model_dump(),
+    }
 
-# ── BEAUTIFUL UI ───────────────────────────────────────────
+# ── UI ─────────────────────────────────────────────────────
 
 @app.get("/view/{session_id}", response_class=HTMLResponse)
 def view(session_id: str):
@@ -121,99 +130,54 @@ def view(session_id: str):
                 background: linear-gradient(135deg, #0f172a, #1e293b);
                 color: white;
             }}
-
             .container {{
                 display: flex;
                 height: 100vh;
             }}
-
             .left {{
                 width: 70%;
                 display: flex;
                 justify-content: center;
                 align-items: center;
             }}
-
             .grid {{
                 background: #020617;
                 padding: 25px;
                 border-radius: 15px;
-                box-shadow: 0 0 30px rgba(0,255,255,0.2);
                 font-size: 18px;
             }}
-
             .right {{
                 width: 30%;
                 padding: 30px;
                 background: rgba(255,255,255,0.05);
-                backdrop-filter: blur(10px);
             }}
-
-            h1 {{
-                color: #38bdf8;
-                margin-bottom: 20px;
-            }}
-
             .card {{
                 margin-bottom: 20px;
                 padding: 15px;
                 border-radius: 10px;
                 background: rgba(255,255,255,0.08);
             }}
-
-            .value {{
-                font-size: 22px;
-                font-weight: bold;
-                color: #22c55e;
-            }}
         </style>
     </head>
-
     <body>
         <div class="container">
-
             <div class="left">
                 <div class="grid">
                     <pre>{grid}</pre>
                 </div>
             </div>
-
             <div class="right">
-                <h1>🚨 Disaster AI</h1>
-
-                <div class="card">
-                    <div>Task</div>
-                    <div class="value">{obs.task_id}</div>
-                </div>
-
-                <div class="card">
-                    <div>Step</div>
-                    <div class="value">{obs.timestep}/{obs.max_timesteps}</div>
-                </div>
-
-                <div class="card">
-                    <div>Active Incidents</div>
-                    <div class="value">{obs.active_count}</div>
-                </div>
-
-                <div class="card">
-                    <div>Resolved</div>
-                    <div class="value">{obs.resolved_count}</div>
-                </div>
-
-                <div class="card">
-                    <div>Lives Saved</div>
-                    <div class="value">{obs.total_lives_saved}</div>
-                </div>
-
+                <h2>🚨 Disaster AI</h2>
+                <div class="card">Task: {obs.task_id}</div>
+                <div class="card">Step: {obs.timestep}/{obs.max_timesteps}</div>
+                <div class="card">Active: {obs.active_count}</div>
+                <div class="card">Resolved: {obs.resolved_count}</div>
+                <div class="card">Lives Saved: {obs.total_lives_saved}</div>
             </div>
-
         </div>
     </body>
     </html>
     """
-
-# ── TEXT VIEW ──────────────────────────────────────────────
 
 @app.get("/visualize/{session_id}", response_class=PlainTextResponse)
 def visualize(session_id: str):
