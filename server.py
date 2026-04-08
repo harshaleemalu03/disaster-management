@@ -16,11 +16,11 @@ from pydantic import BaseModel as _PB
 
 from env.environment import DisasterResponseEnv, VALID_TASKS
 from env.models import ActionWrapper
-from env.world import build_text_grid, build_html_view
+from env.world import build_text_grid
 
-# ── App Initialization ────────────────────────────────────────────────────────
+# ── App ─────────────────────────────────────────────────────
 
-app = FastAPI(title="OpenEnv Disaster Response Server")
+app = FastAPI(title="Disaster Response AI")
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,85 +29,50 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory session store
 _sessions: Dict[str, DisasterResponseEnv] = {}
 
-# ── Root Endpoint (AUTO UI FIXED) ─────────────────────────────────────────────
+# ── ROOT ────────────────────────────────────────────────────
 
 @app.get("/")
 def root():
-    """
-    Auto-create a session and redirect to live UI.
-    Fixes blank UI issue.
-    """
     env = DisasterResponseEnv(task_id="task3_dynamic_coordination", seed=42)
     env.reset()
+    sid = str(uuid.uuid4())
+    _sessions[sid] = env
+    return RedirectResponse(url=f"/view/{sid}")
 
-    session_id = str(uuid.uuid4())
-    _sessions[session_id] = env
-
-    return RedirectResponse(url=f"/view/{session_id}")
-
-# ── Request Models ────────────────────────────────────────────────────────────
+# ── MODELS ─────────────────────────────────────────────────
 
 class ResetRequest(_PB):
     task_id: str = "task1_prioritization"
     seed: int = 42
 
-
 class StepRequest(_PB):
     session_id: str
     action: Dict[str, Any]
 
-# ── Meta Endpoints ────────────────────────────────────────────────────────────
+# ── CORE ───────────────────────────────────────────────────
 
-@app.get("/health", tags=["meta"])
-def health():
-    return {"status": "ok", "active_sessions": len(_sessions)}
-
-
-@app.get("/tasks", tags=["meta"])
-def list_tasks():
-    return {
-        "tasks": [
-            {"id": "task1_prioritization", "difficulty": "easy"},
-            {"id": "task2_resource_allocation", "difficulty": "medium"},
-            {"id": "task3_dynamic_coordination", "difficulty": "hard"},
-        ]
-    }
-
-# ── Core OpenEnv Endpoints ────────────────────────────────────────────────────
-
-@app.post("/reset", tags=["openenv"])
+@app.post("/reset")
 def reset(req: ResetRequest):
     if req.task_id not in VALID_TASKS:
-        raise HTTPException(400, f"Invalid task_id. Choose from {VALID_TASKS}")
+        raise HTTPException(400, f"Invalid task_id")
 
-    session_id = str(uuid.uuid4())
+    sid = str(uuid.uuid4())
     env = DisasterResponseEnv(task_id=req.task_id, seed=req.seed)
-
     obs = env.reset()
-    _sessions[session_id] = env
+    _sessions[sid] = env
 
-    return {
-        "session_id": session_id,
-        "task_id": req.task_id,
-        "observation": obs.model_dump(),
-    }
+    return {"session_id": sid, "observation": obs.model_dump()}
 
-
-@app.post("/step", tags=["openenv"])
+@app.post("/step")
 def step(req: StepRequest):
     env = _sessions.get(req.session_id)
-
     if not env:
-        raise HTTPException(404, "Session not found. Call /reset first.")
+        raise HTTPException(404, "Session not found")
 
-    try:
-        action = ActionWrapper(**req.action)
-        obs, reward, done, info = env.step(action)
-    except Exception as e:
-        raise HTTPException(422, f"Invalid action: {str(e)}")
+    action = ActionWrapper(**req.action)
+    obs, reward, done, info = env.step(action)
 
     return {
         "observation": obs.model_dump(),
@@ -116,106 +81,149 @@ def step(req: StepRequest):
         "info": info,
     }
 
-
-@app.get("/state/{session_id}", tags=["openenv"])
+@app.get("/state/{session_id}")
 def state(session_id: str):
     env = _sessions.get(session_id)
-
     if not env:
-        raise HTTPException(404, "Session not found.")
-
+        raise HTTPException(404, "Session not found")
     return env.state()
 
-
-@app.get("/grade/{session_id}", tags=["openenv"])
+@app.get("/grade/{session_id}")
 def grade(session_id: str):
     env = _sessions.get(session_id)
-
     if not env:
-        raise HTTPException(404, "Session not found.")
+        raise HTTPException(404, "Session not found")
 
     result = env.grade()
+    return {"score": result.grader_score, "details": result.model_dump()}
 
-    return {
-        "session_id": session_id,
-        "grader_score": result.grader_score,
-        "details": result.model_dump(),
-    }
-
-
-@app.delete("/session/{session_id}", tags=["openenv"])
-def delete_session(session_id: str):
-    if session_id in _sessions:
-        del _sessions[session_id]
-        return {"deleted": session_id}
-
-    raise HTTPException(404, "Session not found.")
-
-# ── Agent Endpoint ────────────────────────────────────────────────────────────
-
-@app.get("/render/{session_id}", tags=["agent"])
-def render(session_id: str):
-    env = _sessions.get(session_id)
-
-    if not env:
-        raise HTTPException(404, "Session not found.")
-
-    return {"text": env.render()}
-
-# ── Visualization ─────────────────────────────────────────────────────────────
-
-@app.get("/visualize/{session_id}", response_class=PlainTextResponse)
-def visualize(session_id: str):
-    env = _sessions.get(session_id)
-
-    if not env or env._obs is None:
-        raise HTTPException(404, "Session not ready.")
-
-    obs = env._obs
-
-    grid = build_text_grid(obs.incidents, obs.resources)
-
-    return f"""
-Step: {obs.timestep}/{obs.max_timesteps}
-Active: {obs.active_count} | Resolved: {obs.resolved_count}
-
-{grid}
-"""
-
+# ── BEAUTIFUL UI ───────────────────────────────────────────
 
 @app.get("/view/{session_id}", response_class=HTMLResponse)
 def view(session_id: str):
     env = _sessions.get(session_id)
 
     if not env or env._obs is None:
-        raise HTTPException(404, "Session not ready.")
+        raise HTTPException(404, "Session not ready")
 
     obs = env._obs
+    grid = build_text_grid(obs.incidents, obs.resources)
 
-    return build_html_view(
-        incidents=obs.incidents,
-        resources=obs.resources,
-        timestep=obs.timestep,
-        task_id=obs.task_id,
-    )
+    return f"""
+    <html>
+    <head>
+        <title>Disaster AI Dashboard</title>
+        <meta http-equiv="refresh" content="3">
+        <style>
+            body {{
+                margin: 0;
+                font-family: 'Segoe UI', sans-serif;
+                background: linear-gradient(135deg, #0f172a, #1e293b);
+                color: white;
+            }}
 
-# ── Schema Endpoints ──────────────────────────────────────────────────────────
+            .container {{
+                display: flex;
+                height: 100vh;
+            }}
 
-@app.get("/schema/observation")
-def observation_schema():
-    return DisasterResponseEnv().observation_schema()
+            .left {{
+                width: 70%;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+            }}
 
+            .grid {{
+                background: #020617;
+                padding: 25px;
+                border-radius: 15px;
+                box-shadow: 0 0 30px rgba(0,255,255,0.2);
+                font-size: 18px;
+            }}
 
-@app.get("/schema/action")
-def action_schema():
-    return DisasterResponseEnv().action_schema()
+            .right {{
+                width: 30%;
+                padding: 30px;
+                background: rgba(255,255,255,0.05);
+                backdrop-filter: blur(10px);
+            }}
 
+            h1 {{
+                color: #38bdf8;
+                margin-bottom: 20px;
+            }}
 
-@app.get("/schema/reward")
-def reward_schema():
-    return DisasterResponseEnv().reward_schema()
+            .card {{
+                margin-bottom: 20px;
+                padding: 15px;
+                border-radius: 10px;
+                background: rgba(255,255,255,0.08);
+            }}
 
-# ── Run (Local Only) ──────────────────────────────────────────────────────────
+            .value {{
+                font-size: 22px;
+                font-weight: bold;
+                color: #22c55e;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+
+            <div class="left">
+                <div class="grid">
+                    <pre>{grid}</pre>
+                </div>
+            </div>
+
+            <div class="right">
+                <h1>🚨 Disaster AI</h1>
+
+                <div class="card">
+                    <div>Task</div>
+                    <div class="value">{obs.task_id}</div>
+                </div>
+
+                <div class="card">
+                    <div>Step</div>
+                    <div class="value">{obs.timestep}/{obs.max_timesteps}</div>
+                </div>
+
+                <div class="card">
+                    <div>Active Incidents</div>
+                    <div class="value">{obs.active_count}</div>
+                </div>
+
+                <div class="card">
+                    <div>Resolved</div>
+                    <div class="value">{obs.resolved_count}</div>
+                </div>
+
+                <div class="card">
+                    <div>Lives Saved</div>
+                    <div class="value">{obs.total_lives_saved}</div>
+                </div>
+
+            </div>
+
+        </div>
+    </body>
+    </html>
+    """
+
+# ── TEXT VIEW ──────────────────────────────────────────────
+
+@app.get("/visualize/{session_id}", response_class=PlainTextResponse)
+def visualize(session_id: str):
+    env = _sessions.get(session_id)
+    if not env or env._obs is None:
+        raise HTTPException(404, "Session not ready")
+
+    return build_text_grid(env._obs.incidents, env._obs.resources)
+
+# ── RUN ────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
