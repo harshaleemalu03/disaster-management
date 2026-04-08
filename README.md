@@ -1,13 +1,12 @@
 ---
-
 title: Disaster Response Coordination System
-emoji: 🚨
+emoji: "🚨"
 colorFrom: blue
 colorTo: red
 sdk: docker
 app_file: server.py
 pinned: false
--------------
+---
 
 <div align="center">
 
