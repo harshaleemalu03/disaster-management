@@ -37,17 +37,23 @@ from env.world import build_text_grid, build_html_view
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
-app = FastAPI(
-    title       = "Disaster Response Coordination System",
-    description = (
-        "OpenEnv-compatible AI environment for emergency dispatch coordination. "
-        "Features real travel delays, fire cascade spread, fairness-aware dispatch, "
-        "incident escalation, and live 2-D visualization."
-    ),
-    version     = "2.1.0",
-    docs_url    = "/docs",
-    redoc_url   = "/redoc",
-)
+from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+import requests
+
+app = FastAPI()
+
+@app.get("/")
+def root():
+    try:
+        res = requests.post(
+            "http://localhost:7860/reset",
+            json={"task_id": "task3_dynamic_coordination", "seed": 42}
+        )
+        session_id = res.json().get("session_id")
+        return RedirectResponse(url=f"/view/{session_id}")
+    except:
+        return {"status": "running"}
 
 app.add_middleware(
     CORSMiddleware,
@@ -70,32 +76,6 @@ class ResetRequest(_PB):
 class StepRequest(_PB):
     session_id: str
     action:     Dict[str, Any]
-
-
-# ── Meta endpoints ────────────────────────────────────────────────────────────
-
-@app.get("/", tags=["meta"])
-def root():
-    """Environment metadata — ping this to confirm the Space is alive."""
-    return {
-        "name":        "Disaster Response Coordination System",
-        "version":     "2.1.0",
-        "description": "OpenEnv environment for emergency dispatch coordination.",
-        "valid_tasks": VALID_TASKS,
-        "docs":        "/docs",
-        "endpoints": {
-            "reset":     "POST /reset",
-            "step":      "POST /step",
-            "state":     "GET  /state/{session_id}",
-            "grade":     "GET  /grade/{session_id}",
-            "render":    "GET  /render/{session_id}",
-            "visualize": "GET  /visualize/{session_id}",
-            "view":      "GET  /view/{session_id}",
-            "tasks":     "GET  /tasks",
-            "health":    "GET  /health",
-        },
-    }
-
 
 @app.get("/health", tags=["meta"])
 def health():
