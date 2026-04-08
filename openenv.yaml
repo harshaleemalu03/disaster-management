@@ -1,0 +1,297 @@
+# OpenEnv Environment Specification — Disaster Response Coordination System v2.1
+# Validated against openenv-core schema
+
+name: disaster_response_coordination
+version: "2.1.0"
+description: >
+  A high-fidelity disaster management control room simulation.
+  An AI agent acts as an emergency dispatch coordinator: allocating typed
+  resources to evolving incidents across urban, suburban, and rural geographic zones.
+  Features real distance-based travel delays, fire cascade spread,
+  fairness-aware dispatch (Gini coefficient), incident escalation/expiry,
+  and live text + HTML visualization endpoints.
+
+author: disaster-response-team
+license: MIT
+tags:
+  - disaster-response
+  - resource-allocation
+  - multi-step
+  - emergency-management
+  - fairness
+  - real-world
+
+# ── Environment runtime config ────────────────────────────────────────────────
+environment:
+  id: disaster_response_coordination
+  entry_point: server:app
+  server_type: fastapi
+  port: 7860
+  seed_support: true
+  deterministic: true
+
+# ── Tasks (minimum 3, easy → medium → hard) ───────────────────────────────────
+tasks:
+  - id: task1_prioritization
+    name: "Incident Prioritization"
+    difficulty: easy
+    max_steps: 10
+    description: >
+      6 incidents across urban/suburban/rural zones. Each step the agent issues
+      a reprioritize action ordering incidents highest to lowest urgency.
+      Ground-truth: 0.45*severity + 0.25*people_norm + 0.20*expiry_pressure + 0.10*pop_density.
+      Grader: 0.80*Kendall-tau + 0.20*fairness_score. Score in [0.0, 1.0].
+    success_criteria: "Kendall-tau correlation with optimal urgency ordering > 0.8"
+    baseline_score: 1.00
+
+  - id: task2_resource_allocation
+    name: "Resource Allocation with Travel Delays"
+    difficulty: medium
+    max_steps: 20
+    description: >
+      5 typed incidents, 6 typed resources. Resources travel at type-specific speeds
+      (ambulance 8 km/step, helicopter 25 km/step) adjusted by zone traffic.
+      Resources enter IN_TRANSIT before arriving; resolution requires correct types
+      + sufficient treatment time. Score in [0.0, 1.0].
+    success_criteria: "Resolve at least 3/5 incidents within 20 steps"
+    baseline_score: 0.61
+
+  - id: task3_dynamic_coordination
+    name: "Dynamic Multi-step Coordination"
+    difficulty: hard
+    max_steps: 30
+    description: >
+      Full dynamic simulation: incidents escalate if untreated, new ones spawn
+      (p=0.28/step), unattended fires cascade-spread. Agent must continuously
+      redeploy 6 resources across evolving landscape. Score in [0.0, 1.0].
+    success_criteria: "Resolve >50% of all spawned incidents without cascade explosion"
+    baseline_score: 0.27
+
+# ── Observation space ─────────────────────────────────────────────────────────
+observation:
+  type: object
+  description: "Complete world state snapshot returned by reset() and step()."
+  required_fields:
+    - incidents
+    - resources
+    - timestep
+    - task_id
+    - task_difficulty
+    - max_timesteps
+    - resolved_count
+    - failed_count
+    - active_count
+    - cumulative_reward
+    - total_lives_saved
+    - fairness
+  properties:
+    incidents:
+      type: array
+      description: "All incidents (active, contained, resolved, failed)"
+      items:
+        type: object
+        properties:
+          id:                      {type: string}
+          incident_type:           {type: string, enum: [fire, medical, flood, earthquake, accident, hazmat]}
+          severity:                {type: number, minimum: 0.0, maximum: 1.0}
+          people_affected:         {type: integer, minimum: 0}
+          location:
+            type: object
+            properties:
+              x:    {type: number, description: "km east (0-100)"}
+              y:    {type: number, description: "km north (0-100)"}
+              zone: {type: string, enum: [urban, suburban, rural]}
+          time_since_report:       {type: number, description: "steps elapsed"}
+          status:                  {type: string, enum: [active, contained, resolved, failed]}
+          assigned_resources:      {type: array, items: {type: string}}
+          required_resource_types: {type: array, items: {type: string}}
+          steps_to_expiry:         {type: integer}
+          steps_being_treated:     {type: integer}
+          urgency_score:           {type: number, minimum: 0.0, maximum: 1.0}
+          zone:                    {type: string, enum: [urban, suburban, rural]}
+          population_density:      {type: number, minimum: 0.0, maximum: 1.0}
+    resources:
+      type: array
+      items:
+        type: object
+        properties:
+          id:                     {type: string}
+          resource_type:          {type: string, enum: [ambulance, fire_truck, rescue_team, police, helicopter]}
+          available:              {type: boolean}
+          location:               {type: object}
+          current_assignment:     {type: string, nullable: true}
+          steps_until_free:       {type: integer}
+          steps_in_transit:       {type: integer}
+          in_transit:             {type: boolean}
+          total_assignments:      {type: integer}
+          total_km_traveled:      {type: number}
+    timestep:          {type: integer}
+    task_id:           {type: string}
+    task_difficulty:   {type: string, enum: [easy, medium, hard]}
+    max_timesteps:     {type: integer}
+    resolved_count:    {type: integer}
+    failed_count:      {type: integer}
+    active_count:      {type: integer}
+    cumulative_reward: {type: number}
+    total_lives_saved: {type: integer}
+    fairness:
+      type: object
+      properties:
+        urban_response_rate:    {type: number}
+        suburban_response_rate: {type: number}
+        rural_response_rate:    {type: number}
+        gini_coefficient:       {type: number}
+        neglected_rural_steps:  {type: integer}
+
+# ── Action space ──────────────────────────────────────────────────────────────
+action:
+  type: object
+  description: "One action per step. action_type selects the variant."
+  required_fields:
+    - action_type
+  variants:
+    - action_type: assign_resource
+      description: "Assign an available resource to an active incident."
+      required_fields: [action_type, resource_id, incident_id]
+      example: '{"action_type":"assign_resource","resource_id":"RES-02","incident_id":"INC-003"}'
+
+    - action_type: reprioritize
+      description: "Order incidents by priority (highest urgency first)."
+      required_fields: [action_type, ordered_incident_ids]
+      example: '{"action_type":"reprioritize","ordered_incident_ids":["INC-003","INC-001"]}'
+
+    - action_type: recall_resource
+      description: "Emergency recall of a busy resource (frees it, incurs penalty)."
+      required_fields: [action_type, resource_id]
+      example: '{"action_type":"recall_resource","resource_id":"RES-04"}'
+
+    - action_type: wait
+      description: "Take no action. Penalised if idle resources and active incidents exist."
+      required_fields: [action_type]
+      example: '{"action_type":"wait"}'
+
+# ── Reward design ─────────────────────────────────────────────────────────────
+reward:
+  type: number
+  minimum: 0.0
+  maximum: 1.0
+  description: "Dense reward every step. Components sum to value in [0.0, 1.0]."
+  formula: >
+    value = clip(
+        0.35 * life_saving_score
+      + 0.25 * response_time_score
+      + 0.20 * resource_efficiency_score
+      + 0.10 * fairness_score
+      - 0.05 * delay_penalty
+      - 0.03 * idle_resource_penalty
+      - 0.02 * wrong_assignment_penalty
+      - 0.05 * cascade_penalty,
+      0.0, 1.0
+    )
+  components:
+    life_saving_score:
+      weight: 0.35
+      formula: "min(severity * min(people_affected/100, 1.0), 1.0)"
+    response_time_score:
+      weight: 0.25
+      formula: "1.0 - dist_km / 141.42"
+    resource_efficiency_score:
+      weight: 0.20
+      formula: "COMPAT[resource_type][incident_type]"
+    fairness_score:
+      weight: 0.10
+      formula: "1.0 - gini_coefficient"
+    delay_penalty:
+      weight: -0.05
+      description: "Penalise waiting when active incidents and idle resources exist"
+    idle_resource_penalty:
+      weight: -0.03
+    wrong_assignment_penalty:
+      weight: -0.02
+      description: "Invalid actions (busy resource, resolved incident, unknown ID)"
+    cascade_penalty:
+      weight: -0.05
+      description: "Fire spread events that spawned secondary incidents"
+
+# ── API endpoints ─────────────────────────────────────────────────────────────
+api:
+  base_url: "http://localhost:7860"
+  endpoints:
+    - method: POST
+      path: /reset
+      description: "Start a new episode. Returns session_id + initial observation."
+      request: {task_id: string, seed: integer}
+      response: {session_id: string, task_id: string, observation: object}
+
+    - method: POST
+      path: /step
+      description: "Execute one action. Returns observation, reward, done, info."
+      request: {session_id: string, action: object}
+      response: {observation: object, reward: object, done: boolean, info: object}
+
+    - method: GET
+      path: /state/{session_id}
+      description: "Full internal environment state."
+
+    - method: GET
+      path: /grade/{session_id}
+      description: "Deterministic grader score in [0.0, 1.0] with breakdown."
+
+    - method: GET
+      path: /render/{session_id}
+      description: "Rich text state for LLM agent consumption."
+
+    - method: GET
+      path: /visualize/{session_id}
+      description: "10x10 emoji text grid map of the disaster scene."
+
+    - method: GET
+      path: /view/{session_id}
+      description: "Self-contained HTML live map (auto-refreshes every 5s)."
+
+    - method: GET
+      path: /health
+      description: "Liveness probe. Returns {status: ok}."
+
+# ── Runtime requirements ──────────────────────────────────────────────────────
+runtime:
+  python: ">=3.10"
+  max_inference_minutes: 20
+  max_memory_gb: 8
+  max_vcpu: 2
+  dependencies:
+    - fastapi>=0.110.0
+    - "uvicorn[standard]>=0.27.0"
+    - pydantic>=2.0.0
+    - openai>=1.0.0
+    - requests>=2.31.0
+    - pyyaml>=6.0.1
+  docker:
+    base_image: python:3.11-slim
+    port: 7860
+    healthcheck: GET /health
+    cmd: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "1"]
+
+# ── Grader specifications ─────────────────────────────────────────────────────
+graders:
+  task1_prioritization:
+    type: kendall_tau_fairness
+    score_range: [0.0, 1.0]
+    deterministic: true
+    formula: "0.80 * mean_kendall_tau + 0.20 * fairness_score + consistency_bonus"
+    breakdown_fields: [efficiency, accuracy, time_score, coverage, fairness]
+
+  task2_resource_allocation:
+    type: multi_factor_weighted
+    score_range: [0.0, 1.0]
+    deterministic: true
+    weights: {coverage: 0.30, accuracy: 0.25, efficiency: 0.20, time_score: 0.15, fairness: 0.10}
+    breakdown_fields: [efficiency, accuracy, time_score, coverage, fairness]
+
+  task3_dynamic_coordination:
+    type: holistic_dynamic
+    score_range: [0.0, 1.0]
+    deterministic: true
+    weights: {coverage: 0.30, accuracy: 0.25, time_score: 0.20, efficiency: 0.15, fairness: 0.10}
+    cascade_penalty: "0.04 per cascade event, max 0.20"
+    breakdown_fields: [efficiency, accuracy, time_score, coverage, fairness]
