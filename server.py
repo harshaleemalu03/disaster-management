@@ -2,7 +2,6 @@
 OpenEnv HTTP Server v2.1 — Disaster Response Coordination System
 ================================================================
 FastAPI server implementing the full OpenEnv REST interface.
-Compatible with Hugging Face Spaces (port 7860, non-root user).
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel as _PB
 
 from env.environment import DisasterResponseEnv, VALID_TASKS
@@ -33,15 +32,21 @@ app.add_middleware(
 # In-memory session store
 _sessions: Dict[str, DisasterResponseEnv] = {}
 
-# ── Root Endpoint (SAFE) ──────────────────────────────────────────────────────
+# ── Root Endpoint (AUTO UI FIXED) ─────────────────────────────────────────────
 
 @app.get("/")
 def root():
-    return {
-        "message": "🚀 OpenEnv Disaster Response Server is running",
-        "docs": "/docs",
-        "health": "/health"
-    }
+    """
+    Auto-create a session and redirect to live UI.
+    Fixes blank UI issue.
+    """
+    env = DisasterResponseEnv(task_id="task3_dynamic_coordination", seed=42)
+    env.reset()
+
+    session_id = str(uuid.uuid4())
+    _sessions[session_id] = env
+
+    return RedirectResponse(url=f"/view/{session_id}")
 
 # ── Request Models ────────────────────────────────────────────────────────────
 
@@ -65,24 +70,9 @@ def health():
 def list_tasks():
     return {
         "tasks": [
-            {
-                "id": "task1_prioritization",
-                "name": "Incident Prioritization",
-                "difficulty": "easy",
-                "max_steps": 10,
-            },
-            {
-                "id": "task2_resource_allocation",
-                "name": "Resource Allocation",
-                "difficulty": "medium",
-                "max_steps": 20,
-            },
-            {
-                "id": "task3_dynamic_coordination",
-                "name": "Dynamic Coordination",
-                "difficulty": "hard",
-                "max_steps": 30,
-            },
+            {"id": "task1_prioritization", "difficulty": "easy"},
+            {"id": "task2_resource_allocation", "difficulty": "medium"},
+            {"id": "task3_dynamic_coordination", "difficulty": "hard"},
         ]
     }
 
