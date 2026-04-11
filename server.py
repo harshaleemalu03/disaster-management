@@ -214,13 +214,32 @@ def visualize(session_id: str):
 
 @app.get("/view/{session_id}", tags=["visualization"], response_class=HTMLResponse)
 def view(session_id: str):
+    """
+    Beautiful real-time HTML dashboard.
+    Shows: 12x12 grid map, incident table, resource table, step log,
+    fairness bars, cascade events, stats. Auto-refreshes every 3 seconds.
+    """
     env = _sessions.get(session_id)
     if env is None:
         raise HTTPException(404, "Session not found.")
     if env._obs is None:
         raise HTTPException(400, "No observation yet — call /reset first.")
     obs = env._obs
-    return build_html_view(obs.incidents, obs.resources, obs.timestep, obs.task_id)
+    return build_html_view(
+        incidents         = obs.incidents,
+        resources         = obs.resources,
+        timestep          = obs.timestep,
+        task_id           = obs.task_id,
+        max_timesteps     = obs.max_timesteps,
+        fairness          = obs.fairness,
+        step_logs         = obs.step_log,
+        cascade_events    = obs.cascade_events,
+        resolved_count    = obs.resolved_count,
+        failed_count      = obs.failed_count,
+        active_count      = obs.active_count,
+        lives_saved       = obs.total_lives_saved,
+        cumulative_reward = obs.cumulative_reward,
+    )
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
