@@ -191,13 +191,14 @@ class Task2Environment:
             coverage=round(resolution_rate, 4),
             fairness=round(fairness_score, 4),
         )
-        grader = round(max(0.0001, min(0.9999,
+        grader = round(
             0.30 * resolution_rate
             + 0.25 * severity_score
             + 0.20 * efficiency
             + 0.15 * time_score
-            + 0.10 * fairness_score
-        )), 4)
+            + 0.10 * fairness_score,
+            4,
+        )
         return EpisodeResult(
             task_id=TASK_ID, difficulty=TaskDifficulty.MEDIUM,
             total_steps=self._timestep, total_reward=round(self._cumulative_reward, 4),
