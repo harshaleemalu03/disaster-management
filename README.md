@@ -1,3 +1,14 @@
+---
+title: Disaster Response Coordination System
+emoji: 🚨
+colorFrom: red
+colorTo: blue
+sdk: docker
+sdk_version: "latest"
+app_file: app.py
+pinned: false
+---
+
 <div align="center">
 
 # 🚨 Disaster Response Coordination System
