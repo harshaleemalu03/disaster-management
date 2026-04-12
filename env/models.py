@@ -1,24 +1,20 @@
 """
-Disaster Response Coordination System v2.1 — Typed Data Models
-===============================================================
-Full Pydantic model definitions with physics constants.
-Falls back to lightweight shim when pydantic is absent (sandbox/CI only).
+Disaster Response Coordination System — Typed Data Models
+All Pydantic models. Falls back to lightweight shim when pydantic absent.
 """
 from __future__ import annotations
 
 try:
     from pydantic import BaseModel, Field
-    _PYDANTIC = True
 except ImportError:
     from env._pydantic_shim import BaseModel, Field  # type: ignore
-    _PYDANTIC = False
 
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 import math
 
 
-# ── Enumerations ─────────────────────────────────────────────────────────────
+# ── Enums ─────────────────────────────────────────────────────────────────────
 
 class ResourceType(str, Enum):
     AMBULANCE   = "ambulance"
@@ -26,7 +22,6 @@ class ResourceType(str, Enum):
     RESCUE_TEAM = "rescue_team"
     POLICE      = "police"
     HELICOPTER  = "helicopter"
-
 
 class IncidentType(str, Enum):
     FIRE       = "fire"
@@ -36,19 +31,16 @@ class IncidentType(str, Enum):
     ACCIDENT   = "accident"
     HAZMAT     = "hazmat"
 
-
 class ActionType(str, Enum):
     ASSIGN_RESOURCE = "assign_resource"
     REPRIORITIZE    = "reprioritize"
     RECALL_RESOURCE = "recall_resource"
     WAIT            = "wait"
 
-
 class TaskDifficulty(str, Enum):
     EASY   = "easy"
     MEDIUM = "medium"
     HARD   = "hard"
-
 
 class IncidentStatus(str, Enum):
     ACTIVE    = "active"
@@ -56,34 +48,26 @@ class IncidentStatus(str, Enum):
     RESOLVED  = "resolved"
     FAILED    = "failed"
 
-
 class ZoneType(str, Enum):
     URBAN    = "urban"
     SUBURBAN = "suburban"
     RURAL    = "rural"
 
 
-# ── Physics constants ─────────────────────────────────────────────────────────
+# ── Physics constants ──────────────────────────────────────────────────────────
 
 GRID_KM     = 100.0
-MAX_DIST_KM = GRID_KM * math.sqrt(2)   # ≈141.4 km
+MAX_DIST_KM = GRID_KM * math.sqrt(2)
 
-# km per step  (1 step = 5 real minutes)
 RESOURCE_SPEED: Dict[str, float] = {
-    "ambulance":   8.0,    # ~96 km/h
-    "fire_truck":  7.0,    # ~84 km/h
-    "rescue_team": 5.0,    # ~60 km/h
-    "police":      9.0,    # ~108 km/h
-    "helicopter": 25.0,    # ~300 km/h – ignores traffic
+    "ambulance": 8.0, "fire_truck": 7.0, "rescue_team": 5.0,
+    "police": 9.0, "helicopter": 25.0,
 }
 
 ZONE_TRAFFIC: Dict[str, float] = {
-    "urban":    1.6,
-    "suburban": 1.1,
-    "rural":    0.9,
+    "urban": 1.6, "suburban": 1.1, "rural": 0.9,
 }
 
-# Compatibility score resource_type → incident_type  ∈ [0,1]
 COMPATIBILITY: Dict[str, Dict[str, float]] = {
     "ambulance":   {"medical":1.00,"accident":0.90,"fire":0.45,"flood":0.40,"earthquake":0.55,"hazmat":0.25},
     "fire_truck":  {"fire":1.00,"hazmat":0.85,"accident":0.35,"medical":0.10,"flood":0.20,"earthquake":0.30},
@@ -92,69 +76,55 @@ COMPATIBILITY: Dict[str, Dict[str, float]] = {
     "helicopter":  {"flood":1.00,"earthquake":0.90,"fire":0.70,"medical":0.80,"accident":0.50,"hazmat":0.40},
 }
 
-# Per-step severity increase while unattended
 ESCALATION_RATE: Dict[str, float] = {
     "fire":0.06,"hazmat":0.04,"flood":0.03,"earthquake":0.02,"medical":0.05,"accident":0.03,
 }
 
-# Steps before incident fails if unresolved
 EXPIRY_STEPS: Dict[str, int] = {
     "fire":10,"medical":8,"flood":14,"earthquake":16,"accident":9,"hazmat":12,
 }
 
-# Multiplicative people-affected growth per step when unattended
 PEOPLE_GROWTH: Dict[str, float] = {
     "fire":1.12,"flood":1.08,"earthquake":1.05,"hazmat":1.06,"medical":1.0,"accident":1.0,
 }
 
-# Visual emoji per incident type (used by /visualize and /view endpoints)
 INCIDENT_EMOJI: Dict[str, str] = {
     "fire":"🔥","medical":"🏥","flood":"🌊","earthquake":"⚡","accident":"💥","hazmat":"☣️",
 }
-
 RESOURCE_EMOJI: Dict[str, str] = {
     "ambulance":"🚑","fire_truck":"🚒","rescue_team":"🛟","police":"🚓","helicopter":"🚁",
 }
 
 
-def travel_steps(resource_type: str, dist_km: float, zone: str) -> int:
-    """Distance-based travel time in steps (≥1).  travel_time = dist / (speed/traffic)."""
-    rt = resource_type.value if hasattr(resource_type, "value") else resource_type
-    z  = zone.value if hasattr(zone, "value") else zone
-    speed   = RESOURCE_SPEED.get(rt, 6.0)
-    traffic = ZONE_TRAFFIC.get(z, 1.0)
-    eff     = speed / traffic
-    return max(1, math.ceil(dist_km / eff))
-
-
-def get_compatibility(resource_type: str, incident_type: str) -> float:
-    rt = resource_type.value if hasattr(resource_type, "value") else resource_type
-    it = incident_type.value if hasattr(incident_type, "value") else incident_type
-    return COMPATIBILITY.get(rt, {}).get(it, 0.15)
-
-
 def _v(val: Any) -> str:
     return val.value if hasattr(val, "value") else val
+
+def travel_steps(resource_type: str, dist_km: float, zone: str) -> int:
+    rt = _v(resource_type); z = _v(zone)
+    speed = RESOURCE_SPEED.get(rt, 6.0)
+    traffic = ZONE_TRAFFIC.get(z, 1.0)
+    return max(1, math.ceil(dist_km / (speed / traffic)))
+
+def get_compatibility(resource_type: str, incident_type: str) -> float:
+    return COMPATIBILITY.get(_v(resource_type), {}).get(_v(incident_type), 0.15)
 
 
 # ── Sub-models ────────────────────────────────────────────────────────────────
 
 class Location(BaseModel):
-    x:    float    = Field(default=0.0)   # km east
-    y:    float    = Field(default=0.0)   # km north
+    x:    float    = Field(default=0.0)
+    y:    float    = Field(default=0.0)
     zone: ZoneType = Field(default=ZoneType.SUBURBAN)
 
     def distance_to(self, other: "Location") -> float:
-        return math.sqrt((self.x - other.x) ** 2 + (self.y - other.y) ** 2)
+        return math.sqrt((self.x - other.x)**2 + (self.y - other.y)**2)
 
     def model_dump(self) -> Dict[str, Any]:
-        return {"x": round(self.x, 2), "y": round(self.y, 2), "zone": _v(self.zone)}
+        return {"x": round(self.x,2), "y": round(self.y,2), "zone": _v(self.zone)}
 
-    def grid_cell(self, cols: int = 10, rows: int = 10) -> tuple:
-        """Map continuous coords to grid cell (col, row)."""
-        col = min(int(self.x / GRID_KM * cols), cols - 1)
-        row = min(int(self.y / GRID_KM * rows), rows - 1)
-        return col, row
+    def grid_cell(self, cols:int=10, rows:int=10):
+        return (min(int(self.x/GRID_KM*cols), cols-1),
+                min(int(self.y/GRID_KM*rows), rows-1))
 
 
 class CascadeEvent(BaseModel):
@@ -165,13 +135,11 @@ class CascadeEvent(BaseModel):
     location:           Location
 
     def model_dump(self) -> Dict[str, Any]:
-        return {
-            "source_incident_id": self.source_incident_id,
-            "trigger_step":       self.trigger_step,
-            "incident_type":      _v(self.incident_type),
-            "severity":           self.severity,
-            "location":           self.location.model_dump(),
-        }
+        return {"source_incident_id":self.source_incident_id,
+                "trigger_step":self.trigger_step,
+                "incident_type":_v(self.incident_type),
+                "severity":self.severity,
+                "location":self.location.model_dump()}
 
 
 class Incident(BaseModel):
@@ -192,7 +160,7 @@ class Incident(BaseModel):
     zone:                    ZoneType             = Field(default=ZoneType.SUBURBAN)
     population_density:      float                = Field(default=0.5)
 
-    def __init__(self, **data: Any):
+    def __init__(self, **data):
         data.setdefault("assigned_resources", [])
         data.setdefault("required_resource_types", [])
         data.setdefault("status", IncidentStatus.ACTIVE)
@@ -204,7 +172,7 @@ class Incident(BaseModel):
 
     @property
     def is_active(self) -> bool:
-        return _v(self.status) in ("active", "contained")
+        return _v(self.status) in ("active","contained")
 
     @property
     def is_resolved(self) -> bool:
@@ -214,41 +182,32 @@ class Incident(BaseModel):
         return _v(self.incident_type)
 
     def urgency_score(self) -> float:
-        """
-        Composite urgency used as ground-truth for prioritization grader.
-        Formula: 0.45*severity + 0.25*people_norm + 0.20*expiry_pressure + 0.10*pop_density
-        """
         expiry_pressure = max(0.0, 1.0 - self.steps_to_expiry / 16.0)
-        return round(
-            0.45 * self.severity
-            + 0.25 * min(self.people_affected / 200.0, 1.0)
-            + 0.20 * expiry_pressure
-            + 0.10 * self.population_density,
-            4,
-        )
+        return round(0.45*self.severity + 0.25*min(self.people_affected/200.0,1.0)
+                     + 0.20*expiry_pressure + 0.10*self.population_density, 4)
 
     def emoji(self) -> str:
         return INCIDENT_EMOJI.get(self.itype_str(), "❓")
 
     def model_dump(self) -> Dict[str, Any]:
         return {
-            "id":                      self.id,
-            "incident_type":           _v(self.incident_type),
-            "severity":                round(self.severity, 4),
-            "people_affected":         self.people_affected,
-            "location":                self.location.model_dump(),
-            "time_since_report":       round(self.time_since_report, 2),
-            "status":                  _v(self.status),
-            "assigned_resources":      list(self.assigned_resources),
+            "id": self.id,
+            "incident_type": _v(self.incident_type),
+            "severity": round(self.severity, 4),
+            "people_affected": self.people_affected,
+            "location": self.location.model_dump(),
+            "time_since_report": round(self.time_since_report, 2),
+            "status": _v(self.status),
+            "assigned_resources": list(self.assigned_resources),
             "required_resource_types": [_v(rt) for rt in self.required_resource_types],
-            "base_resolution_steps":   self.base_resolution_steps,
-            "steps_to_expiry":         self.steps_to_expiry,
-            "steps_being_treated":     self.steps_being_treated,
-            "resolution_step":         self.resolution_step,
-            "cascade_triggered":       self.cascade_triggered,
-            "zone":                    _v(self.zone),
-            "population_density":      self.population_density,
-            "urgency_score":           self.urgency_score(),
+            "base_resolution_steps": self.base_resolution_steps,
+            "steps_to_expiry": self.steps_to_expiry,
+            "steps_being_treated": self.steps_being_treated,
+            "resolution_step": self.resolution_step,
+            "cascade_triggered": self.cascade_triggered,
+            "zone": _v(self.zone),
+            "population_density": self.population_density,
+            "urgency_score": self.urgency_score(),
         }
 
 
@@ -266,7 +225,7 @@ class Resource(BaseModel):
     successful_assignments: int                = Field(default=0)
     total_km_traveled:      float              = Field(default=0.0)
 
-    def __init__(self, **data: Any):
+    def __init__(self, **data):
         if "home_location" not in data or data.get("home_location") is None:
             data["home_location"] = data.get("location", Location())
         super().__init__(**data)
@@ -279,22 +238,20 @@ class Resource(BaseModel):
 
     def model_dump(self) -> Dict[str, Any]:
         return {
-            "id":                     self.id,
-            "resource_type":          _v(self.resource_type),
-            "available":              self.available,
-            "location":               self.location.model_dump(),
-            "home_location":          self.home_location.model_dump() if self.home_location else None,
-            "current_assignment":     self.current_assignment,
-            "steps_until_free":       self.steps_until_free,
-            "steps_in_transit":       self.steps_in_transit,
-            "in_transit":             self.in_transit,
-            "total_assignments":      self.total_assignments,
+            "id": self.id,
+            "resource_type": _v(self.resource_type),
+            "available": self.available,
+            "location": self.location.model_dump(),
+            "home_location": self.home_location.model_dump() if self.home_location else None,
+            "current_assignment": self.current_assignment,
+            "steps_until_free": self.steps_until_free,
+            "steps_in_transit": self.steps_in_transit,
+            "in_transit": self.in_transit,
+            "total_assignments": self.total_assignments,
             "successful_assignments": self.successful_assignments,
-            "total_km_traveled":      round(self.total_km_traveled, 2),
+            "total_km_traveled": round(self.total_km_traveled, 2),
         }
 
-
-# ── Fairness ──────────────────────────────────────────────────────────────────
 
 class FairnessMetrics(BaseModel):
     urban_response_rate:    float = Field(default=0.0)
@@ -303,7 +260,7 @@ class FairnessMetrics(BaseModel):
     gini_coefficient:       float = Field(default=0.0)
     neglected_rural_steps:  int   = Field(default=0)
 
-    def __init__(self, **data: Any):
+    def __init__(self, **data):
         for k in ["urban_response_rate","suburban_response_rate","rural_response_rate","gini_coefficient"]:
             data.setdefault(k, 0.0)
         data.setdefault("neglected_rural_steps", 0)
@@ -319,8 +276,6 @@ class FairnessMetrics(BaseModel):
         }
 
 
-# ── Step log ──────────────────────────────────────────────────────────────────
-
 class StepLog(BaseModel):
     step:               int
     action_type:        str
@@ -332,19 +287,12 @@ class StepLog(BaseModel):
     explanation:        str
 
     def model_dump(self) -> Dict[str, Any]:
-        return {
-            "step":               self.step,
-            "action_type":        self.action_type,
-            "action_detail":      self.action_detail,
-            "reward":             round(self.reward, 4),
-            "incidents_active":   self.incidents_active,
-            "incidents_resolved": self.incidents_resolved,
-            "resources_busy":     self.resources_busy,
-            "explanation":        self.explanation,
-        }
+        return {"step":self.step,"action_type":self.action_type,
+                "action_detail":self.action_detail,"reward":round(self.reward,4),
+                "incidents_active":self.incidents_active,
+                "incidents_resolved":self.incidents_resolved,
+                "resources_busy":self.resources_busy,"explanation":self.explanation}
 
-
-# ── Observation ───────────────────────────────────────────────────────────────
 
 class Observation(BaseModel):
     incidents:         List[Incident]     = Field(default_factory=list)
@@ -362,11 +310,11 @@ class Observation(BaseModel):
     step_log:          List[StepLog]      = Field(default_factory=list)
     cascade_events:    List[CascadeEvent] = Field(default_factory=list)
 
-    def __init__(self, **data: Any):
-        for k, v in [("incidents",[]),("resources",[]),("resolved_count",0),("failed_count",0),
-                     ("active_count",0),("cumulative_reward",0.0),("total_lives_saved",0),
-                     ("step_log",[]),("cascade_events",[])]:
-            data.setdefault(k, v)
+    def __init__(self, **data):
+        for k,v in [("incidents",[]),("resources",[]),("resolved_count",0),("failed_count",0),
+                    ("active_count",0),("cumulative_reward",0.0),("total_lives_saved",0),
+                    ("step_log",[]),("cascade_events",[])]:
+            data.setdefault(k,v)
         data.setdefault("fairness", FairnessMetrics())
         super().__init__(**data)
 
@@ -390,45 +338,38 @@ class Observation(BaseModel):
 
     @classmethod
     def model_json_schema(cls) -> Dict[str, Any]:
-        return {"type": "object", "title": "Observation"}
+        return {"type":"object","title":"Observation"}
 
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()
 
     def to_text(self) -> str:
-        """Rich text rendering for LLM consumption."""
         td = _v(self.task_difficulty)
         lines = [
             f"╔═══ DISASTER CONTROL: {self.task_id} ({td.upper()}) ═══╗",
-            f"  Step {self.timestep}/{self.max_timesteps} │ "
-            f"Resolved:{self.resolved_count} │ Failed:{self.failed_count} │ "
-            f"Active:{self.active_count} │ Lives Saved:{self.total_lives_saved} │ "
-            f"CumReward:{self.cumulative_reward:.3f}",
-            f"  Fairness → Urban:{self.fairness.urban_response_rate:.0%}  "
-            f"Suburban:{self.fairness.suburban_response_rate:.0%}  "
-            f"Rural:{self.fairness.rural_response_rate:.0%}  "
-            f"Gini:{self.fairness.gini_coefficient:.3f}",
+            f"  Step {self.timestep}/{self.max_timesteps} | Resolved:{self.resolved_count} "
+            f"Failed:{self.failed_count} Active:{self.active_count} "
+            f"Lives:{self.total_lives_saved} Reward:{self.cumulative_reward:.3f}",
+            f"  Fairness Gini:{self.fairness.gini_coefficient:.3f} "
+            f"Urban:{self.fairness.urban_response_rate:.0%} "
+            f"Rural:{self.fairness.rural_response_rate:.0%}",
             "",
-            "┌─ ACTIVE INCIDENTS ──────────────────────────────────────────────────┐",
+            "┌─ ACTIVE INCIDENTS ─────────────────────────────────────────┐",
         ]
         active = [i for i in self.incidents if i.is_active]
         for inc in sorted(active, key=lambda x: -x.urgency_score()):
             zone     = _v(inc.zone)
             assigned = ", ".join(inc.assigned_resources) if inc.assigned_resources else "⚠ NONE"
-            status   = _v(inc.status)
             lines.append(
                 f"  [{inc.id}] {inc.emoji()} {inc.itype_str():10} "
                 f"sev={inc.severity:.2f} ppl={inc.people_affected:4d} "
-                f"expiry={inc.steps_to_expiry:2d}s zone={zone:8} "
-                f"urgency={inc.urgency_score():.3f} status={status:9} "
-                f"assigned=[{assigned}]"
+                f"expiry={inc.steps_to_expiry:2d} zone={zone:8} "
+                f"urgency={inc.urgency_score():.3f} [{assigned}]"
             )
         if not active:
             lines.append("  (no active incidents)")
-        lines += [
-            "└─────────────────────────────────────────────────────────────────────┘",
-            "┌─ RESOURCES ─────────────────────────────────────────────────────────┐",
-        ]
+        lines += ["└────────────────────────────────────────────────────────────┘",
+                  "┌─ RESOURCES ─────────────────────────────────────────────────┐"]
         for res in self.resources:
             zone = _v(res.location.zone)
             if res.available:
@@ -439,19 +380,16 @@ class Observation(BaseModel):
                 st = f"● BUSY({res.steps_until_free}s)→{res.current_assignment}"
             lines.append(
                 f"  [{res.id}] {res.emoji()} {res.rtype_str():12} "
-                f"@({res.location.x:5.1f},{res.location.y:5.1f}) "
-                f"zone={zone:8} km={res.total_km_traveled:5.1f} │ {st}"
+                f"@({res.location.x:5.1f},{res.location.y:5.1f}) zone={zone:8} | {st}"
             )
-        lines.append("└─────────────────────────────────────────────────────────────────────┘")
+        lines.append("└────────────────────────────────────────────────────────────┘")
         if self.step_log:
-            lines += ["", "┌─ RECENT ACTIONS ────────────────────────────────────────────────────┐"]
+            lines += ["","┌─ RECENT ACTIONS ────────────────────────────────────────────┐"]
             for e in self.step_log[-3:]:
-                lines.append(f"  Step {e.step:2d} │ {e.action_detail:44} │ r={e.reward:.3f}")
-            lines.append("└─────────────────────────────────────────────────────────────────────┘")
+                lines.append(f"  Step {e.step:2d} | {e.action_detail:42} | r={e.reward:.3f}")
+            lines.append("└────────────────────────────────────────────────────────────┘")
         return "\n".join(lines)
 
-
-# ── Actions ───────────────────────────────────────────────────────────────────
 
 class ActionWrapper(BaseModel):
     action_type:           ActionType
@@ -459,7 +397,7 @@ class ActionWrapper(BaseModel):
     incident_id:           Optional[str]       = Field(default=None)
     ordered_incident_ids:  Optional[List[str]] = Field(default=None)
 
-    def __init__(self, **data: Any):
+    def __init__(self, **data):
         if "action_type" in data and isinstance(data["action_type"], str):
             data["action_type"] = ActionType(data["action_type"])
         data.setdefault("resource_id", None)
@@ -469,28 +407,10 @@ class ActionWrapper(BaseModel):
 
     @classmethod
     def model_json_schema(cls) -> Dict[str, Any]:
-        return {"type": "object", "title": "ActionWrapper"}
+        return {"type":"object","title":"ActionWrapper"}
 
-
-# ── Reward ────────────────────────────────────────────────────────────────────
 
 class RewardBreakdown(BaseModel):
-    """
-    Dense reward decomposition.
-
-    EXACT FORMULA:
-        value = clip(
-            0.35 * life_saving_score          # severity × people_norm
-          + 0.25 * response_time_score        # 1 − dist_km/MAX_DIST
-          + 0.20 * resource_efficiency_score  # COMPAT[resource][incident]
-          + 0.10 * fairness_score             # 1 − gini_coefficient
-          − 0.05 * delay_penalty              # waiting w/ idle resources
-          − 0.03 * idle_resource_penalty      # idle fraction
-          − 0.02 * wrong_assignment_penalty   # invalid actions
-          − 0.05 * cascade_penalty,           # fire spread events
-          0.0, 1.0
-        )
-    """
     life_saving_score:         float = Field(default=0.0)
     response_time_score:       float = Field(default=0.0)
     resource_efficiency_score: float = Field(default=0.0)
@@ -500,7 +420,7 @@ class RewardBreakdown(BaseModel):
     wrong_assignment_penalty:  float = Field(default=0.0)
     cascade_penalty:           float = Field(default=0.0)
 
-    def __init__(self, **data: Any):
+    def __init__(self, **data):
         for k in ["life_saving_score","response_time_score","resource_efficiency_score",
                   "fairness_score","delay_penalty","idle_resource_penalty",
                   "wrong_assignment_penalty","cascade_penalty"]:
@@ -508,24 +428,17 @@ class RewardBreakdown(BaseModel):
         super().__init__(**data)
 
     def model_dump(self) -> Dict[str, Any]:
-        return {k: round(getattr(self, k), 4) for k in [
+        return {k: round(getattr(self,k),4) for k in [
             "life_saving_score","response_time_score","resource_efficiency_score",
             "fairness_score","delay_penalty","idle_resource_penalty",
-            "wrong_assignment_penalty","cascade_penalty",
-        ]}
+            "wrong_assignment_penalty","cascade_penalty"]}
 
     def compute_value(self) -> float:
-        raw = (
-            0.35 * self.life_saving_score
-            + 0.25 * self.response_time_score
-            + 0.20 * self.resource_efficiency_score
-            + 0.10 * self.fairness_score
-            - 0.05 * self.delay_penalty
-            - 0.03 * self.idle_resource_penalty
-            - 0.02 * self.wrong_assignment_penalty
-            - 0.05 * self.cascade_penalty
-        )
-        return round(max(0.0001, min(0.9999, raw)), 4)
+        raw = (0.35*self.life_saving_score + 0.25*self.response_time_score
+               + 0.20*self.resource_efficiency_score + 0.10*self.fairness_score
+               - 0.05*self.delay_penalty - 0.03*self.idle_resource_penalty
+               - 0.02*self.wrong_assignment_penalty - 0.05*self.cascade_penalty)
+        return round(min(max(raw, 0.0), 1.0), 4)
 
 
 class Reward(BaseModel):
@@ -533,46 +446,38 @@ class Reward(BaseModel):
     breakdown:   RewardBreakdown = Field(default_factory=RewardBreakdown)
     explanation: str             = Field(default="")
 
-    def __init__(self, **data: Any):
+    def __init__(self, **data):
         data.setdefault("breakdown", RewardBreakdown())
         data.setdefault("explanation", "")
         super().__init__(**data)
 
     def model_dump(self) -> Dict[str, Any]:
-        return {
-            "value":       self.value,
-            "breakdown":   self.breakdown.model_dump(),
-            "explanation": self.explanation,
-        }
+        return {"value":self.value,"breakdown":self.breakdown.model_dump(),"explanation":self.explanation}
 
     @classmethod
     def model_json_schema(cls) -> Dict[str, Any]:
-        return {"type": "object", "title": "Reward"}
+        return {"type":"object","title":"Reward"}
 
     @staticmethod
     def invalid(reason: str) -> "Reward":
         bd = RewardBreakdown(wrong_assignment_penalty=1.0)
-        val = round(max(0.0001, min(0.9999, bd.compute_value())), 4)
-        return Reward(value=val, breakdown=bd, explanation=reason)
+        return Reward(value=bd.compute_value(), breakdown=bd, explanation=reason)
 
-
-# ── Grader result ─────────────────────────────────────────────────────────────
 
 class GraderBreakdown(BaseModel):
-    efficiency: float = Field(default=0.0)   # resource utilization quality
-    accuracy:   float = Field(default=0.0)   # decision correctness / severity rescue
-    time_score: float = Field(default=0.0)   # speed of resolution
-    coverage:   float = Field(default=0.0)   # fraction of incidents addressed
-    fairness:   float = Field(default=0.0)   # equitable zone coverage
+    efficiency: float = Field(default=0.0)
+    accuracy:   float = Field(default=0.0)
+    time_score: float = Field(default=0.0)
+    coverage:   float = Field(default=0.0)
+    fairness:   float = Field(default=0.0)
 
-    def __init__(self, **data: Any):
+    def __init__(self, **data):
         for k in ["efficiency","accuracy","time_score","coverage","fairness"]:
             data.setdefault(k, 0.0)
         super().__init__(**data)
 
     def model_dump(self) -> Dict[str, Any]:
-        return {k: round(getattr(self, k), 4) for k in
-                ["efficiency","accuracy","time_score","coverage","fairness"]}
+        return {k: round(getattr(self,k),4) for k in ["efficiency","accuracy","time_score","coverage","fairness"]}
 
 
 class EpisodeResult(BaseModel):
@@ -590,7 +495,7 @@ class EpisodeResult(BaseModel):
     cascade_events_triggered: int
     details:                  Dict[str, Any]  = Field(default_factory=dict)
 
-    def __init__(self, **data: Any):
+    def __init__(self, **data):
         data.setdefault("breakdown", GraderBreakdown())
         data.setdefault("details", {})
         data.setdefault("cascade_events_triggered", 0)
@@ -598,17 +503,13 @@ class EpisodeResult(BaseModel):
 
     def model_dump(self) -> Dict[str, Any]:
         return {
-            "task_id":                  self.task_id,
-            "difficulty":               _v(self.difficulty),
-            "total_steps":              self.total_steps,
-            "total_reward":             round(self.total_reward, 4),
-            "grader_score":             round(self.grader_score, 4),
-            "breakdown":                self.breakdown.model_dump(),
-            "resolved_incidents":       self.resolved_incidents,
-            "failed_incidents":         self.failed_incidents,
-            "resource_utilization":     round(self.resource_utilization, 4),
-            "average_response_time":    round(self.average_response_time, 2),
-            "total_lives_saved":        self.total_lives_saved,
-            "cascade_events_triggered": self.cascade_events_triggered,
-            "details":                  self.details,
+            "task_id":self.task_id,"difficulty":_v(self.difficulty),
+            "total_steps":self.total_steps,"total_reward":round(self.total_reward,4),
+            "grader_score":round(self.grader_score,4),"breakdown":self.breakdown.model_dump(),
+            "resolved_incidents":self.resolved_incidents,"failed_incidents":self.failed_incidents,
+            "resource_utilization":round(self.resource_utilization,4),
+            "average_response_time":round(self.average_response_time,2),
+            "total_lives_saved":self.total_lives_saved,
+            "cascade_events_triggered":self.cascade_events_triggered,
+            "details":self.details,
         }

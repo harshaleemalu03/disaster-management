@@ -529,10 +529,8 @@ def grade(session_id: str):
         raise HTTPException(404, "Session not found.")
     result      = env.grade()
     description = env.grade_description()
-    safe_score  = round(max(0.0001, min(0.9999, float(result.grader_score))), 4)
-    result.grader_score = safe_score
     return {"session_id": session_id, "result": result.model_dump(),
-            "grader_score": safe_score, "description": description}
+            "grader_score": result.grader_score, "description": description}
 
 
 @app.delete("/session/{session_id}", tags=["openenv"])
