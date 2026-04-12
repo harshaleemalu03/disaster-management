@@ -282,9 +282,13 @@ def run_task(task_id: str) -> Dict[str, Any]:
             pass
 
         # Always attempt LLM call through validator's proxy
-        action: Dict[str, Any] = {}
-        if obs_text:
-            action = llm_action(obs_text, task_id)
+        # Fall back to JSON-serialised obs if render returned nothing
+        if not obs_text:
+            try:
+                obs_text = json.dumps(obs_dict, separators=(",", ":"))
+            except Exception:
+                obs_text = str(obs_dict)
+        action: Dict[str, Any] = llm_action(obs_text, task_id)
 
         # Heuristic fallback if LLM returned nothing valid
         if not action or "action_type" not in action:
