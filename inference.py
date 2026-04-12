@@ -80,7 +80,9 @@ if _HAS_OPENAI:
             api_key  = API_KEY,
             base_url = API_BASE_URL,
         )
-    except Exception:
+        print(f"# LLM client initialised: base_url={API_BASE_URL}", file=sys.stderr, flush=True)
+    except Exception as _e:
+        print(f"# ERROR building LLM client: {_e}", file=sys.stderr, flush=True)
         _llm_client = None
 
 # ---------------------------------------------------------------------------
@@ -111,6 +113,7 @@ JSON only. Nothing else."""
 def llm_action(obs_text: str, task_id: str) -> Dict[str, Any]:
     """Call LiteLLM proxy. Returns parsed action or {} on failure."""
     if _llm_client is None:
+        print("# llm_action skipped: _llm_client is None", file=sys.stderr, flush=True)
         return {}
     try:
         resp = _llm_client.chat.completions.create(
@@ -129,7 +132,8 @@ def llm_action(obs_text: str, task_id: str) -> Dict[str, Any]:
             if raw.startswith("json"):
                 raw = raw[4:]
         return json.loads(raw.strip())
-    except Exception:
+    except Exception as exc:
+        print(f"# llm_action error: {exc}", file=sys.stderr, flush=True)
         return {}
 
 # ---------------------------------------------------------------------------
@@ -281,13 +285,14 @@ def run_task(task_id: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-        # Always attempt LLM call through validator's proxy
-        # Fall back to JSON-serialised obs if render returned nothing
+        # If render returned nothing, fall back to JSON-serialised obs dict
         if not obs_text:
             try:
                 obs_text = json.dumps(obs_dict, separators=(",", ":"))
             except Exception:
                 obs_text = str(obs_dict)
+
+        # ALWAYS call LLM through validator's proxy — never skip
         action: Dict[str, Any] = llm_action(obs_text, task_id)
 
         # Heuristic fallback if LLM returned nothing valid
