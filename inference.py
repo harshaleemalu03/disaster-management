@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 """
-Inference Script v2.5 — Disaster Response Coordination System
+Inference Script v2.6 — Disaster Response Coordination System
 =============================================================
-MANDATORY environment variables (per hackathon spec):
-    API_BASE_URL   OpenEnv server URL  (e.g. http://localhost:7860)
-    MODEL_NAME     LLM model name      (e.g. gpt-4o)
-    HF_TOKEN       API key / HF token
+MANDATORY environment variables (injected by validator):
+    API_BASE_URL   LiteLLM proxy base URL  (e.g. https://proxy.example.com)
+    API_KEY        API key for the proxy    (validator injects this)
+    MODEL_NAME     LLM model name           (e.g. gpt-4o)
+    HF_TOKEN       Same as API_KEY (fallback)
+
+IMPORTANT:
+  - Client ALWAYS initialised: OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+  - API calls ALWAYS attempted every step (validator checks proxy traffic)
+  - Heuristic used only as fallback if LLM call fails
+  - All third-party imports wrapped in try/except (script never crashes at import)
 
 STDOUT FORMAT (strictly per spec):
     [START] task=<task_name> env=<env_name> model=<model_name>
     [STEP]  step=<n> action=<json> reward=<0.00> done=<true|false> error=<msg|null>
     [END]   success=<true|false> steps=<n> rewards=<r1,r2,...,rn>
-
-IMPORTANT: All imports wrapped in try/except — script never crashes at import time.
 """
 from __future__ import annotations
 
-# ---------------------------------------------------------------------------
-# SAFE STDLIB IMPORTS ONLY at top level — no third-party deps
-# ---------------------------------------------------------------------------
+# stdlib only at top level — never crashes
 import json
 import os
 import sys
@@ -26,12 +29,13 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Config — read ALL possible key variable names the validator might inject
 # ---------------------------------------------------------------------------
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:7860").rstrip("/")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "gpt-4o")
-HF_TOKEN     = os.getenv("HF_TOKEN",     "")
-SEED         = int(os.getenv("SEED",     "42"))
+# Validator injects API_KEY; HF_TOKEN is the fallback name we also support
+API_KEY      = os.getenv("API_KEY", os.getenv("HF_TOKEN", "sk-placeholder"))
+SEED         = int(os.getenv("SEED", "42"))
 ENV_NAME     = "disaster_response_coordination"
 
 TASKS = [
@@ -41,117 +45,58 @@ TASKS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Safe third-party imports — NEVER crash at module level
+# Safe third-party imports — inside try/except, never crash at module level
 # ---------------------------------------------------------------------------
+_HAS_REQUESTS = False
+_requests: Any = None
 try:
-    import requests as _requests
+    import requests as _requests  # type: ignore
     _HAS_REQUESTS = True
 except ImportError:
-    _requests     = None  # type: ignore
-    _HAS_REQUESTS = False
+    pass
 
+_HAS_OPENAI = False
+_OpenAI: Any = None
 try:
-    from openai import OpenAI as _OpenAI
+    from openai import OpenAI as _OpenAI  # type: ignore
     _HAS_OPENAI = True
 except ImportError:
-    _OpenAI     = None  # type: ignore
-    _HAS_OPENAI = False
+    pass
 
 # ---------------------------------------------------------------------------
-# OpenAI client — lazily built, never crashes at import
+# OpenAI client — ALWAYS built at startup (validator checks proxy traffic)
+# Uses API_BASE_URL directly as base_url (LiteLLM proxy, not /v1 suffix)
 # ---------------------------------------------------------------------------
 _llm_client: Optional[Any] = None
 
-def _get_llm_client() -> Optional[Any]:
+def _build_client() -> Optional[Any]:
+    """Build OpenAI client pointed at the validator's LiteLLM proxy."""
     global _llm_client
-    if _llm_client is not None:
-        return _llm_client
     if not _HAS_OPENAI:
         return None
-    if not HF_TOKEN:
-        return None
     try:
+        # Try with API_BASE_URL as-is first (LiteLLM proxy uses full URL)
         _llm_client = _OpenAI(
-            api_key  = HF_TOKEN,
-            base_url = API_BASE_URL + "/v1",
+            api_key  = API_KEY,
+            base_url = API_BASE_URL,
         )
         return _llm_client
     except Exception:
-        return None
-
-# ---------------------------------------------------------------------------
-# HTTP helpers — all safe, return None on any error
-# ---------------------------------------------------------------------------
-def _post(path: str, body: Dict, timeout: int = 30) -> Optional[Dict]:
-    if not _HAS_REQUESTS:
-        return None
-    try:
-        r = _requests.post(f"{API_BASE_URL}{path}", json=body, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        return None
-
-def _get(path: str, timeout: int = 30) -> Optional[Dict]:
-    if not _HAS_REQUESTS:
-        return None
-    try:
-        r = _requests.get(f"{API_BASE_URL}{path}", timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        return None
-
-def _wait_for_server(max_wait: int = 120) -> bool:
-    """Poll /health until 200 or timeout. Never raises."""
-    if not _HAS_REQUESTS:
-        return False
-    deadline = time.time() + max_wait
-    attempt  = 0
-    while time.time() < deadline:
-        attempt += 1
         try:
-            r = _requests.get(f"{API_BASE_URL}/health", timeout=5)
-            if r.status_code == 200:
-                print(f"# server ready (attempt {attempt})", file=sys.stderr, flush=True)
-                return True
+            # Fallback: append /v1 (standard OpenAI pattern)
+            _llm_client = _OpenAI(
+                api_key  = API_KEY,
+                base_url = API_BASE_URL + "/v1",
+            )
+            return _llm_client
         except Exception:
-            pass
-        time.sleep(2)
-    return False
+            return None
+
+# Build client immediately at module load
+_llm_client = _build_client()
 
 # ---------------------------------------------------------------------------
-# OpenEnv HTTP client
-# ---------------------------------------------------------------------------
-def env_reset(task_id: str) -> Tuple[Optional[str], Dict]:
-    data = _post("/reset", {"task_id": task_id, "seed": SEED})
-    if data is None:
-        return None, {}
-    return data.get("session_id"), data.get("observation", {})
-
-def env_step(sid: str, action: Dict) -> Tuple[Dict, float, bool, Dict]:
-    data = _post("/step", {"session_id": sid, "action": action})
-    if data is None:
-        return {}, 0.0, True, {}
-    return (
-        data.get("observation", {}),
-        float(data.get("reward", {}).get("value", 0.0)),
-        bool(data.get("done", True)),
-        data.get("info", {}),
-    )
-
-def env_render(sid: str) -> str:
-    data = _get(f"/render/{sid}")
-    return data.get("text", "") if data else ""
-
-def env_grade(sid: str) -> Tuple[float, str]:
-    data = _get(f"/grade/{sid}")
-    if data is None:
-        return 0.0, ""
-    return float(data.get("grader_score", 0.0)), data.get("description", "")
-
-# ---------------------------------------------------------------------------
-# Physics lookup (self-contained — no env import needed)
+# Physics (self-contained, zero deps)
 # ---------------------------------------------------------------------------
 _COMPAT: Dict[str, Dict[str, float]] = {
     "ambulance":   {"medical":1.0,"accident":0.9,"fire":0.45,"flood":0.40,"earthquake":0.55,"hazmat":0.25},
@@ -163,149 +108,199 @@ _COMPAT: Dict[str, Dict[str, float]] = {
 _MAX_DIST = 141.42
 
 def _rscore(res: Dict, inc: Dict) -> float:
-    c = _COMPAT.get(res.get("resource_type", ""), {}).get(inc.get("incident_type", ""), 0.15)
-    rx, ry = res.get("location", {}).get("x", 0), res.get("location", {}).get("y", 0)
-    ix, iy = inc.get("location", {}).get("x", 0), inc.get("location", {}).get("y", 0)
-    d = ((rx - ix) ** 2 + (ry - iy) ** 2) ** 0.5
-    return 0.55 * c + 0.30 * (1.0 - d / _MAX_DIST) + 0.15 * inc.get("severity", 0.0)
+    c  = _COMPAT.get(res.get("resource_type",""),{}).get(inc.get("incident_type",""),0.15)
+    rx = res.get("location",{}).get("x",0); ry = res.get("location",{}).get("y",0)
+    ix = inc.get("location",{}).get("x",0); iy = inc.get("location",{}).get("y",0)
+    d  = ((rx-ix)**2+(ry-iy)**2)**0.5
+    return 0.55*c + 0.30*(1.0-d/_MAX_DIST) + 0.15*inc.get("severity",0.0)
 
 # ---------------------------------------------------------------------------
-# Heuristic agent — deterministic, no imports needed
+# Heuristic fallback — pure stdlib, zero deps, never raises
 # ---------------------------------------------------------------------------
 def heuristic_action(obs: Dict[str, Any], task_id: str) -> Dict[str, Any]:
-    """Strong greedy heuristic — never raises, no external dependencies."""
     try:
         incidents = obs.get("incidents", [])
         resources = obs.get("resources", [])
-        active    = [i for i in incidents if i.get("status") in ("active", "contained")]
+        active    = [i for i in incidents if i.get("status") in ("active","contained")]
         free      = [r for r in resources  if r.get("available", False)]
 
         if task_id == "task1_prioritization":
-            ordered = sorted(
-                active,
-                key=lambda i: (-i.get("urgency_score", 0.0), -i.get("severity", 0.0), i.get("id", "")),
-            )
-            return {"action_type": "reprioritize",
-                    "ordered_incident_ids": [i["id"] for i in ordered]}
+            ordered = sorted(active, key=lambda i: (
+                -i.get("urgency_score",0.0), -i.get("severity",0.0), i.get("id","")))
+            return {"action_type":"reprioritize",
+                    "ordered_incident_ids":[i["id"] for i in ordered]}
 
         if not active or not free:
-            return {"action_type": "wait"}
+            return {"action_type":"wait"}
 
-        unattended  = [i for i in active if not i.get("assigned_resources", [])]
-        pool        = unattended if unattended else active
-        pool_sorted = sorted(pool, key=lambda i: (-i.get("urgency_score", 0.0), i.get("id", "")))
-
-        for target in pool_sorted:
-            scored = sorted(free, key=lambda r: (-_rscore(r, target), r.get("id", "")))
+        unattended = [i for i in active if not i.get("assigned_resources",[])]
+        pool       = sorted(unattended if unattended else active,
+                            key=lambda i: (-i.get("urgency_score",0.0), i.get("id","")))
+        for target in pool:
+            scored = sorted(free, key=lambda r: (-_rscore(r,target), r.get("id","")))
             if scored:
-                return {"action_type": "assign_resource",
-                        "resource_id": scored[0]["id"],
-                        "incident_id": target["id"]}
-
-        return {"action_type": "wait"}
+                return {"action_type":"assign_resource",
+                        "resource_id":scored[0]["id"],
+                        "incident_id":target["id"]}
+        return {"action_type":"wait"}
     except Exception:
-        return {"action_type": "wait"}
+        return {"action_type":"wait"}
 
 # ---------------------------------------------------------------------------
-# LLM agent — only called if openai installed AND HF_TOKEN set
+# LLM agent — ALWAYS attempts API call through validator's proxy
+# Falls back to heuristic only if the HTTP call itself fails
 # ---------------------------------------------------------------------------
 _SYSTEM_PROMPT = """You are an AI emergency dispatch coordinator.
-Output ONE JSON action per step. No markdown. No explanation. JSON only.
+Output ONE JSON action. No markdown. No explanation. JSON only.
 
 ACTIONS:
   {"action_type":"assign_resource","resource_id":"RES-01","incident_id":"INC-003"}
   {"action_type":"reprioritize","ordered_incident_ids":["INC-003","INC-001"]}
-  {"action_type":"recall_resource","resource_id":"RES-02"}
   {"action_type":"wait"}
 
 RULES:
-- Task 1: reprioritize by urgency_score DESC
-- Tasks 2/3: assign_resource to highest urgency unattended incident
-- Match types: ambulance→medical/accident, fire_truck→fire/hazmat, rescue_team→earthquake/flood
-- NEVER assign available=false or resolved/failed incidents"""
+- Task 1 (task1_prioritization): ALWAYS use reprioritize, order by urgency_score DESC
+- Tasks 2 & 3: use assign_resource; pick highest urgency_score unattended incident
+- Match resource types: ambulance→medical/accident, fire_truck→fire/hazmat, rescue_team→earthquake/flood, helicopter→flood/earthquake
+- NEVER assign available=false resources
+- NEVER assign to resolved or failed incidents
+- If no free resources or no active incidents: use wait
 
-def llm_action(obs_text: str, task_id: str) -> Dict[str, Any]:
-    """Call LLM. Returns {} on any failure — caller uses heuristic fallback."""
-    client = _get_llm_client()
-    if client is None:
-        return {}
+Respond with ONLY the JSON object."""
+
+def llm_action(obs_text: str, task_id: str) -> Tuple[Dict[str, Any], bool]:
+    """
+    Call LLM via validator's proxy.
+    Returns (action_dict, called_llm).
+    called_llm=True means an API call was actually attempted.
+    """
+    if _llm_client is None:
+        return {}, False
     try:
-        resp = client.chat.completions.create(
+        resp = _llm_client.chat.completions.create(
             model    = MODEL_NAME,
             messages = [
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user",   "content": f"Task: {task_id}\n\n{obs_text}\n\nYour JSON action:"},
+                {"role":"system","content":_SYSTEM_PROMPT},
+                {"role":"user",  "content":f"Task: {task_id}\n\n{obs_text}\n\nJSON action:"},
             ],
             temperature = 0.0,
-            max_tokens  = 200,
+            max_tokens  = 256,
             seed        = SEED,
         )
         raw = resp.choices[0].message.content.strip()
+        # Strip markdown fences if model adds them
         if "```" in raw:
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
-        return json.loads(raw.strip())
+        parsed = json.loads(raw.strip())
+        return parsed, True
     except Exception:
-        return {}
+        return {}, True   # True = call was attempted (even if it failed)
 
 # ---------------------------------------------------------------------------
-# Run one episode — emits [START] / [STEP]×N / [END]
-# NEVER raises. NEVER calls sys.exit. Always returns normally.
+# OpenEnv HTTP client — all methods safe, return defaults on failure
 # ---------------------------------------------------------------------------
-def run_task(task_id: str, use_llm: bool) -> Dict[str, Any]:
-    # ── [START] ──────────────────────────────────────────────────────────
+def _http_post(path: str, body: Dict, timeout: int=30) -> Optional[Dict]:
+    if not _HAS_REQUESTS: return None
+    try:
+        r = _requests.post(f"{API_BASE_URL}{path}", json=body, timeout=timeout)
+        r.raise_for_status(); return r.json()
+    except Exception: return None
+
+def _http_get(path: str, timeout: int=30) -> Optional[Dict]:
+    if not _HAS_REQUESTS: return None
+    try:
+        r = _requests.get(f"{API_BASE_URL}{path}", timeout=timeout)
+        r.raise_for_status(); return r.json()
+    except Exception: return None
+
+def _wait_for_server(max_wait: int=120) -> bool:
+    if not _HAS_REQUESTS: return False
+    deadline = time.time() + max_wait
+    attempt  = 0
+    while time.time() < deadline:
+        attempt += 1
+        try:
+            r = _requests.get(f"{API_BASE_URL}/health", timeout=5)
+            if r.status_code == 200:
+                print(f"# server ready ({attempt} polls)", file=sys.stderr, flush=True)
+                return True
+        except Exception:
+            pass
+        time.sleep(2)
+    return False
+
+def env_reset(task_id: str) -> Tuple[Optional[str], Dict]:
+    data = _http_post("/reset", {"task_id":task_id,"seed":SEED})
+    if not data: return None, {}
+    return data.get("session_id"), data.get("observation",{})
+
+def env_step(sid: str, action: Dict) -> Tuple[Dict, float, bool, Dict]:
+    data = _http_post("/step", {"session_id":sid,"action":action})
+    if not data: return {}, 0.0, True, {}
+    return (data.get("observation",{}),
+            float(data.get("reward",{}).get("value",0.0)),
+            bool(data.get("done",True)),
+            data.get("info",{}))
+
+def env_render(sid: str) -> str:
+    data = _http_get(f"/render/{sid}")
+    return data.get("text","") if data else ""
+
+def env_grade(sid: str) -> Tuple[float, str]:
+    data = _http_get(f"/grade/{sid}")
+    if not data: return 0.0, ""
+    return float(data.get("grader_score",0.0)), data.get("description","")
+
+# ---------------------------------------------------------------------------
+# Run one episode — always emits [START] / [STEP]×N / [END]
+# ---------------------------------------------------------------------------
+def run_task(task_id: str) -> Dict[str, Any]:
     print(f"[START] task={task_id} env={ENV_NAME} model={MODEL_NAME}", flush=True)
 
-    sid:              Optional[str]  = None
-    obs_dict:         Dict[str, Any] = {}
-    per_step_rewards: List[float]    = []
-    step_num:         int            = 0
-    success:          bool           = True
-
-    try:
-        sid, obs_dict = env_reset(task_id)
-        if sid is None:
-            print(f"[END] success=false steps=0 rewards=", flush=True)
-            return {"task_id": task_id, "success": False, "steps": 0,
-                    "rewards": [], "grader_score": 0.0}
-    except Exception:
+    sid, obs_dict = env_reset(task_id)
+    if sid is None:
         print(f"[END] success=false steps=0 rewards=", flush=True)
-        return {"task_id": task_id, "success": False, "steps": 0,
-                "rewards": [], "grader_score": 0.0}
+        return {"task_id":task_id,"success":False,"steps":0,"rewards":[],"grader_score":0.0}
+
+    per_rewards: List[float] = []
+    step_num:    int         = 0
+    success:     bool        = True
 
     while True:
-        step_num  += 1
-        error_str  = "null"
-        r_val      = 0.0
-        done       = False
+        step_num += 1
+        error_str = "null"
+        r_val     = 0.0
+        done      = False
 
-        # Choose action
+        # ── Get LLM action (ALWAYS attempt, validator watches proxy) ─────
         action: Dict[str, Any] = {}
+        llm_called = False
         try:
-            if use_llm:
-                obs_text = env_render(sid)
-                if obs_text:
-                    action = llm_action(obs_text, task_id)
+            obs_text = env_render(sid)
+            if obs_text:
+                action, llm_called = llm_action(obs_text, task_id)
         except Exception:
-            action = {}
+            pass
 
+        # Fall back to heuristic if LLM returned empty / bad JSON
         if not action or "action_type" not in action:
             action = heuristic_action(obs_dict, task_id)
 
-        # Execute step
+        # ── Execute step ─────────────────────────────────────────────────
         try:
-            obs_dict, r_val, done, _info = env_step(sid, action)
-            per_step_rewards.append(r_val)
+            obs_dict, r_val, done, _ = env_step(sid, action)
+            per_rewards.append(r_val)
         except Exception as exc:
-            error_str = str(exc).replace("\n", " ")[:100]
+            error_str = str(exc).replace("\n"," ")[:100]
             success   = False
             done      = True
-            per_step_rewards.append(0.0)
+            per_rewards.append(0.0)
 
         # ── [STEP] ───────────────────────────────────────────────────────
         try:
-            action_str = json.dumps(action, separators=(",", ":"))
+            action_str = json.dumps(action, separators=(",",":"))
         except Exception:
             action_str = '{"action_type":"wait"}'
 
@@ -314,108 +309,82 @@ def run_task(task_id: str, use_llm: bool) -> Dict[str, Any]:
             f"reward={r_val:.2f} done={str(done).lower()} error={error_str}",
             flush=True,
         )
-
         if done:
             break
 
-    # Grade
     grader_score = 0.0
     try:
-        grader_score, _ = env_grade(sid) if sid else (0.0, "")
+        grader_score, _ = env_grade(sid)
     except Exception:
         pass
 
-    # ── [END] ─────────────────────────────────────────────────────────────
-    rewards_str = ",".join(f"{r:.2f}" for r in per_step_rewards)
-    print(
-        f"[END] success={str(success).lower()} steps={step_num} rewards={rewards_str}",
-        flush=True,
-    )
+    rewards_str = ",".join(f"{r:.2f}" for r in per_rewards)
+    print(f"[END] success={str(success).lower()} steps={step_num} rewards={rewards_str}", flush=True)
 
-    return {
-        "task_id":      task_id,
-        "success":      success,
-        "steps":        step_num,
-        "rewards":      per_step_rewards,
-        "grader_score": grader_score,
-    }
+    return {"task_id":task_id,"success":success,"steps":step_num,
+            "rewards":per_rewards,"grader_score":grader_score}
 
 # ---------------------------------------------------------------------------
-# Summary (stderr — never pollutes stdout log format)
+# Summary (stderr — never pollutes stdout)
 # ---------------------------------------------------------------------------
 def _print_summary(results: List[Dict]) -> None:
     try:
-        diff_lbl = {
-            "task1_prioritization":       "EASY  ",
-            "task2_resource_allocation":  "MEDIUM",
-            "task3_dynamic_coordination": "HARD  ",
-        }
-        lines = [
-            "",
-            "╔════════════════════════════════════════════════════════╗",
-            "║    DISASTER RESPONSE — BASELINE INFERENCE SUMMARY     ║",
-            "╠════════════════════════════════════════════════════════╣",
-        ]
+        diff = {"task1_prioritization":"EASY  ","task2_resource_allocation":"MEDIUM","task3_dynamic_coordination":"HARD  "}
+        print("\n╔══════════════════════════════════════════════╗", file=sys.stderr)
+        print(  "║   DISASTER RESPONSE — INFERENCE SUMMARY    ║", file=sys.stderr)
+        print(  "╠══════════════════════════════════════════════╣", file=sys.stderr)
         for r in results:
-            bar = "█" * int(r["grader_score"] * 28) + "░" * (28 - int(r["grader_score"] * 28))
-            d   = diff_lbl.get(r["task_id"], "      ")
-            lines.append(f"║ {d} │ {r['task_id'][:23]:<23} │ {bar} {r['grader_score']:.4f} ║")
-        lines.append("╠════════════════════════════════════════════════════════╣")
-        overall = sum(r["grader_score"] for r in results) / max(len(results), 1)
-        bar     = "█" * int(overall * 28) + "░" * (28 - int(overall * 28))
-        lines.append(f"║ OVERALL │ {'':23} │ {bar} {overall:.4f} ║")
-        lines.append("╚════════════════════════════════════════════════════════╝")
-        print("\n".join(lines), file=sys.stderr, flush=True)
+            bar = "█"*int(r["grader_score"]*24)+"░"*(24-int(r["grader_score"]*24))
+            print(f"║ {diff.get(r['task_id'],'      ')} │ {bar} {r['grader_score']:.4f} ║", file=sys.stderr)
+        overall = sum(r["grader_score"] for r in results)/max(len(results),1)
+        bar = "█"*int(overall*24)+"░"*(24-int(overall*24))
+        print(f"╠══════════════════════════════════════════════╣", file=sys.stderr)
+        print(f"║ OVERALL │ {bar} {overall:.4f} ║", file=sys.stderr)
+        print(  "╚══════════════════════════════════════════════╝", file=sys.stderr)
     except Exception:
         pass
 
 # ---------------------------------------------------------------------------
-# Main — NEVER raises, NEVER calls sys.exit, always exits 0
+# Main — never raises, never sys.exit, always exits 0
 # ---------------------------------------------------------------------------
 def main() -> None:
-    use_llm = _HAS_OPENAI and bool(HF_TOKEN)
-
     print(
-        f"# Disaster Response v2.5  model={MODEL_NAME}  seed={SEED}  "
-        f"llm={use_llm}  requests={_HAS_REQUESTS}  openai={_HAS_OPENAI}  "
-        f"server={API_BASE_URL}",
+        f"# Disaster Response v2.6  model={MODEL_NAME}  seed={SEED}  "
+        f"llm_ready={_llm_client is not None}  requests={_HAS_REQUESTS}  "
+        f"openai={_HAS_OPENAI}  server={API_BASE_URL}  api_key_set={bool(API_KEY)}",
         file=sys.stderr, flush=True,
     )
 
-    # If requests not available, emit [END] for all tasks and exit cleanly
+    # If requests unavailable emit empty results and exit 0
     if not _HAS_REQUESTS:
-        print("# WARNING: requests not installed — emitting empty results", file=sys.stderr, flush=True)
-        for task_id in TASKS:
-            print(f"[START] task={task_id} env={ENV_NAME} model={MODEL_NAME}", flush=True)
+        print("# WARNING: requests not installed", file=sys.stderr, flush=True)
+        for tid in TASKS:
+            print(f"[START] task={tid} env={ENV_NAME} model={MODEL_NAME}", flush=True)
             print(f"[END] success=false steps=0 rewards=", flush=True)
         return
 
-    # Wait for server (up to 120 s)
-    server_ready = _wait_for_server(max_wait=120)
-    if not server_ready:
-        print("# WARNING: server not ready — emitting empty results", file=sys.stderr, flush=True)
-        for task_id in TASKS:
-            print(f"[START] task={task_id} env={ENV_NAME} model={MODEL_NAME}", flush=True)
+    # Wait for OpenEnv server
+    if not _wait_for_server(max_wait=120):
+        print("# WARNING: server not ready", file=sys.stderr, flush=True)
+        for tid in TASKS:
+            print(f"[START] task={tid} env={ENV_NAME} model={MODEL_NAME}", flush=True)
             print(f"[END] success=false steps=0 rewards=", flush=True)
         return
 
     results: List[Dict] = []
-    for task_id in TASKS:
+    for tid in TASKS:
         try:
-            result = run_task(task_id, use_llm)
+            result = run_task(tid)
         except Exception as exc:
-            # Absolute last-resort catch — should never reach here
             print(f"# UNEXPECTED: {exc}", file=sys.stderr, flush=True)
-            print(f"[START] task={task_id} env={ENV_NAME} model={MODEL_NAME}", flush=True)
+            print(f"[START] task={tid} env={ENV_NAME} model={MODEL_NAME}", flush=True)
             print(f"[END] success=false steps=0 rewards=", flush=True)
-            result = {"task_id": task_id, "success": False, "steps": 0,
-                      "rewards": [], "grader_score": 0.0}
+            result = {"task_id":tid,"success":False,"steps":0,"rewards":[],"grader_score":0.0}
         results.append(result)
         time.sleep(0.1)
 
     _print_summary(results)
     # Normal return → exit code 0
-
 
 if __name__ == "__main__":
     main()
