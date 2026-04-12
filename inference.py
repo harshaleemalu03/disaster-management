@@ -1,44 +1,33 @@
 #!/usr/bin/env python3
 """
-Inference Script v2.2 — Disaster Response Coordination System
+Inference Script v2.5 — Disaster Response Coordination System
 =============================================================
 MANDATORY environment variables (per hackathon spec):
-    API_BASE_URL   The OpenEnv server URL AND LLM base URL
-                   (e.g. http://localhost:7860 or https://your-hf-space.hf.space)
-    MODEL_NAME     The LLM model identifier (e.g. gpt-4o)
-    HF_TOKEN       Your Hugging Face / OpenAI API key
+    API_BASE_URL   OpenEnv server URL  (e.g. http://localhost:7860)
+    MODEL_NAME     LLM model name      (e.g. gpt-4o)
+    HF_TOKEN       API key / HF token
 
-STDOUT FORMAT — strictly per spec (any deviation causes evaluation failure):
-    [START] task=<name> env=<env_name> model=<model>
+STDOUT FORMAT (strictly per spec):
+    [START] task=<task_name> env=<env_name> model=<model_name>
     [STEP]  step=<n> action=<json> reward=<0.00> done=<true|false> error=<msg|null>
-    [END]   success=<true|false> steps=<n> rewards=<r1,r2,...>
+    [END]   success=<true|false> steps=<n> rewards=<r1,r2,...,rn>
 
-Rules (verbatim from spec):
-  - One [START] at episode begin.
-  - One [STEP] per step, immediately after env.step() returns.
-  - One [END] after env closes — ALWAYS emitted, even on exception.
-  - reward and rewards formatted to 2 decimal places.
-  - done and success are lowercase booleans: true or false.
-  - error is the raw error string, or null if none.
-  - All fields on a single line, no embedded newlines.
+IMPORTANT: All imports wrapped in try/except — script never crashes at import time.
 """
 from __future__ import annotations
 
+# ---------------------------------------------------------------------------
+# SAFE STDLIB IMPORTS ONLY at top level — no third-party deps
+# ---------------------------------------------------------------------------
 import json
 import os
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-import requests
-from openai import OpenAI
-
 # ---------------------------------------------------------------------------
-# Configuration — read from environment variables per hackathon spec
+# Configuration
 # ---------------------------------------------------------------------------
-# API_BASE_URL is used as BOTH the OpenEnv server URL and the LLM base URL.
-# When running locally: http://localhost:7860
-# When deployed on HF:  https://your-space.hf.space
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:7860").rstrip("/")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "gpt-4o")
 HF_TOKEN     = os.getenv("HF_TOKEN",     "")
@@ -52,20 +41,117 @@ TASKS = [
 ]
 
 # ---------------------------------------------------------------------------
-# OpenAI client — always initialised (uses API_BASE_URL + HF_TOKEN)
-# LLM calls go to: {API_BASE_URL}/v1/chat/completions
+# Safe third-party imports — NEVER crash at module level
 # ---------------------------------------------------------------------------
-_llm_client: Optional[OpenAI] = None
 try:
-    _llm_client = OpenAI(
-        api_key  = HF_TOKEN if HF_TOKEN else "sk-no-key-heuristic-mode",
-        base_url = API_BASE_URL + "/v1",
-    )
-except Exception:
-    _llm_client = None
+    import requests as _requests
+    _HAS_REQUESTS = True
+except ImportError:
+    _requests     = None  # type: ignore
+    _HAS_REQUESTS = False
+
+try:
+    from openai import OpenAI as _OpenAI
+    _HAS_OPENAI = True
+except ImportError:
+    _OpenAI     = None  # type: ignore
+    _HAS_OPENAI = False
 
 # ---------------------------------------------------------------------------
-# Physics lookup (self-contained — no env import required)
+# OpenAI client — lazily built, never crashes at import
+# ---------------------------------------------------------------------------
+_llm_client: Optional[Any] = None
+
+def _get_llm_client() -> Optional[Any]:
+    global _llm_client
+    if _llm_client is not None:
+        return _llm_client
+    if not _HAS_OPENAI:
+        return None
+    if not HF_TOKEN:
+        return None
+    try:
+        _llm_client = _OpenAI(
+            api_key  = HF_TOKEN,
+            base_url = API_BASE_URL + "/v1",
+        )
+        return _llm_client
+    except Exception:
+        return None
+
+# ---------------------------------------------------------------------------
+# HTTP helpers — all safe, return None on any error
+# ---------------------------------------------------------------------------
+def _post(path: str, body: Dict, timeout: int = 30) -> Optional[Dict]:
+    if not _HAS_REQUESTS:
+        return None
+    try:
+        r = _requests.post(f"{API_BASE_URL}{path}", json=body, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
+def _get(path: str, timeout: int = 30) -> Optional[Dict]:
+    if not _HAS_REQUESTS:
+        return None
+    try:
+        r = _requests.get(f"{API_BASE_URL}{path}", timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
+def _wait_for_server(max_wait: int = 120) -> bool:
+    """Poll /health until 200 or timeout. Never raises."""
+    if not _HAS_REQUESTS:
+        return False
+    deadline = time.time() + max_wait
+    attempt  = 0
+    while time.time() < deadline:
+        attempt += 1
+        try:
+            r = _requests.get(f"{API_BASE_URL}/health", timeout=5)
+            if r.status_code == 200:
+                print(f"# server ready (attempt {attempt})", file=sys.stderr, flush=True)
+                return True
+        except Exception:
+            pass
+        time.sleep(2)
+    return False
+
+# ---------------------------------------------------------------------------
+# OpenEnv HTTP client
+# ---------------------------------------------------------------------------
+def env_reset(task_id: str) -> Tuple[Optional[str], Dict]:
+    data = _post("/reset", {"task_id": task_id, "seed": SEED})
+    if data is None:
+        return None, {}
+    return data.get("session_id"), data.get("observation", {})
+
+def env_step(sid: str, action: Dict) -> Tuple[Dict, float, bool, Dict]:
+    data = _post("/step", {"session_id": sid, "action": action})
+    if data is None:
+        return {}, 0.0, True, {}
+    return (
+        data.get("observation", {}),
+        float(data.get("reward", {}).get("value", 0.0)),
+        bool(data.get("done", True)),
+        data.get("info", {}),
+    )
+
+def env_render(sid: str) -> str:
+    data = _get(f"/render/{sid}")
+    return data.get("text", "") if data else ""
+
+def env_grade(sid: str) -> Tuple[float, str]:
+    data = _get(f"/grade/{sid}")
+    if data is None:
+        return 0.0, ""
+    return float(data.get("grader_score", 0.0)), data.get("description", "")
+
+# ---------------------------------------------------------------------------
+# Physics lookup (self-contained — no env import needed)
 # ---------------------------------------------------------------------------
 _COMPAT: Dict[str, Dict[str, float]] = {
     "ambulance":   {"medical":1.0,"accident":0.9,"fire":0.45,"flood":0.40,"earthquake":0.55,"hazmat":0.25},
@@ -76,78 +162,55 @@ _COMPAT: Dict[str, Dict[str, float]] = {
 }
 _MAX_DIST = 141.42
 
-
-def _dist(a: Dict, b: Dict) -> float:
-    return ((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5
-
-
 def _rscore(res: Dict, inc: Dict) -> float:
-    c = _COMPAT.get(res["resource_type"], {}).get(inc["incident_type"], 0.15)
-    d = _dist(res["location"], inc["location"])
+    c = _COMPAT.get(res.get("resource_type", ""), {}).get(inc.get("incident_type", ""), 0.15)
+    rx, ry = res.get("location", {}).get("x", 0), res.get("location", {}).get("y", 0)
+    ix, iy = inc.get("location", {}).get("x", 0), inc.get("location", {}).get("y", 0)
+    d = ((rx - ix) ** 2 + (ry - iy) ** 2) ** 0.5
     return 0.55 * c + 0.30 * (1.0 - d / _MAX_DIST) + 0.15 * inc.get("severity", 0.0)
 
-
 # ---------------------------------------------------------------------------
-# Heuristic agent — deterministic strong baseline, no LLM needed
+# Heuristic agent — deterministic, no imports needed
 # ---------------------------------------------------------------------------
 def heuristic_action(obs: Dict[str, Any], task_id: str) -> Dict[str, Any]:
-    """
-    Priority-based greedy heuristic.
-    Task 1:   sort by urgency_score DESC → reprioritize
-    Task 2/3: pick highest-urgency unattended incident,
-              assign nearest compatible free resource.
-    Fully deterministic via secondary sort on ID.
-    """
-    incidents = obs.get("incidents", [])
-    resources = obs.get("resources", [])
-    active    = [i for i in incidents if i.get("status") in ("active", "contained")]
-    free      = [r for r in resources  if r.get("available", False)]
+    """Strong greedy heuristic — never raises, no external dependencies."""
+    try:
+        incidents = obs.get("incidents", [])
+        resources = obs.get("resources", [])
+        active    = [i for i in incidents if i.get("status") in ("active", "contained")]
+        free      = [r for r in resources  if r.get("available", False)]
 
-    if task_id == "task1_prioritization":
-        ordered = sorted(
-            active,
-            key=lambda i: (
-                -i.get("urgency_score", 0.0),
-                -i.get("severity", 0.0),
-                -i.get("people_affected", 0),
-                i["id"],
-            ),
-        )
-        return {
-            "action_type":          "reprioritize",
-            "ordered_incident_ids": [i["id"] for i in ordered],
-        }
+        if task_id == "task1_prioritization":
+            ordered = sorted(
+                active,
+                key=lambda i: (-i.get("urgency_score", 0.0), -i.get("severity", 0.0), i.get("id", "")),
+            )
+            return {"action_type": "reprioritize",
+                    "ordered_incident_ids": [i["id"] for i in ordered]}
 
-    if not active or not free:
+        if not active or not free:
+            return {"action_type": "wait"}
+
+        unattended  = [i for i in active if not i.get("assigned_resources", [])]
+        pool        = unattended if unattended else active
+        pool_sorted = sorted(pool, key=lambda i: (-i.get("urgency_score", 0.0), i.get("id", "")))
+
+        for target in pool_sorted:
+            scored = sorted(free, key=lambda r: (-_rscore(r, target), r.get("id", "")))
+            if scored:
+                return {"action_type": "assign_resource",
+                        "resource_id": scored[0]["id"],
+                        "incident_id": target["id"]}
+
+        return {"action_type": "wait"}
+    except Exception:
         return {"action_type": "wait"}
 
-    unattended  = [i for i in active if not i.get("assigned_resources", [])]
-    pool        = unattended if unattended else active
-    pool_sorted = sorted(
-        pool,
-        key=lambda i: (
-            -i.get("urgency_score", 0.0),
-            -i.get("severity", 0.0),
-            i.get("steps_to_expiry", 999),
-            i["id"],
-        ),
-    )
-    for target in pool_sorted:
-        scored = sorted(free, key=lambda r: (-_rscore(r, target), r["id"]))
-        if scored:
-            return {
-                "action_type": "assign_resource",
-                "resource_id": scored[0]["id"],
-                "incident_id": target["id"],
-            }
-    return {"action_type": "wait"}
-
-
 # ---------------------------------------------------------------------------
-# LLM agent — uses OpenAI client (API_BASE_URL/v1 + HF_TOKEN)
+# LLM agent — only called if openai installed AND HF_TOKEN set
 # ---------------------------------------------------------------------------
 _SYSTEM_PROMPT = """You are an AI emergency dispatch coordinator.
-Output ONE JSON action per step. No markdown. No explanation.
+Output ONE JSON action per step. No markdown. No explanation. JSON only.
 
 ACTIONS:
   {"action_type":"assign_resource","resource_id":"RES-01","incident_id":"INC-003"}
@@ -156,20 +219,18 @@ ACTIONS:
   {"action_type":"wait"}
 
 RULES:
-- Task 1: ALWAYS reprioritize by urgency_score DESC
-- Tasks 2/3: assign_resource to highest urgency_score unattended incident
-- Match: ambulance→medical/accident, fire_truck→fire/hazmat, rescue_team→earthquake/flood
-- NEVER assign available=false resources or resolved/failed incidents
-
-JSON only. Nothing else."""
-
+- Task 1: reprioritize by urgency_score DESC
+- Tasks 2/3: assign_resource to highest urgency unattended incident
+- Match types: ambulance→medical/accident, fire_truck→fire/hazmat, rescue_team→earthquake/flood
+- NEVER assign available=false or resolved/failed incidents"""
 
 def llm_action(obs_text: str, task_id: str) -> Dict[str, Any]:
-    """Call LLM. Returns action dict or {} on any failure."""
-    if _llm_client is None or not HF_TOKEN:
+    """Call LLM. Returns {} on any failure — caller uses heuristic fallback."""
+    client = _get_llm_client()
+    if client is None:
         return {}
     try:
-        resp = _llm_client.chat.completions.create(
+        resp = client.chat.completions.create(
             model    = MODEL_NAME,
             messages = [
                 {"role": "system", "content": _SYSTEM_PROMPT},
@@ -188,77 +249,9 @@ def llm_action(obs_text: str, task_id: str) -> Dict[str, Any]:
     except Exception:
         return {}
 
-
-# ---------------------------------------------------------------------------
-# OpenEnv HTTP client — talks to API_BASE_URL (the env server)
-# ---------------------------------------------------------------------------
-def _post(path: str, body: Dict, timeout: int = 30) -> Dict:
-    r = requests.post(f"{API_BASE_URL}{path}", json=body, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
-
-
-def _get(path: str, timeout: int = 30) -> Dict:
-    r = requests.get(f"{API_BASE_URL}{path}", timeout=timeout)
-    r.raise_for_status()
-    return r.json()
-
-
-def _wait_for_server(max_wait: int = 120) -> bool:
-    """
-    Poll /health until the server responds 200.
-    Returns True when ready, False on timeout.
-    Never raises — all exceptions caught internally.
-    """
-    deadline = time.time() + max_wait
-    attempt  = 0
-    while time.time() < deadline:
-        attempt += 1
-        try:
-            r = requests.get(f"{API_BASE_URL}/health", timeout=5)
-            if r.status_code == 200:
-                print(f"# Server ready after {attempt} poll(s)", file=sys.stderr)
-                return True
-        except Exception:
-            pass
-        time.sleep(2)
-    return False
-
-
-def env_reset(task_id: str) -> Tuple[str, Dict]:
-    data = _post("/reset", {"task_id": task_id, "seed": SEED})
-    return data["session_id"], data["observation"]
-
-
-def env_step(sid: str, action: Dict) -> Tuple[Dict, float, bool, Dict]:
-    data = _post("/step", {"session_id": sid, "action": action})
-    return (
-        data["observation"],
-        data["reward"]["value"],
-        data["done"],
-        data["info"],
-    )
-
-
-def env_render(sid: str) -> str:
-    try:
-        return _get(f"/render/{sid}").get("text", "")
-    except Exception:
-        return ""
-
-
-def env_grade(sid: str) -> Tuple[float, str]:
-    try:
-        data = _get(f"/grade/{sid}")
-        return data.get("grader_score", 0.0), data.get("description", "")
-    except Exception:
-        return 0.0, ""
-
-
 # ---------------------------------------------------------------------------
 # Run one episode — emits [START] / [STEP]×N / [END]
-# NEVER raises — all exceptions handled internally.
-# NEVER calls sys.exit — always returns normally.
+# NEVER raises. NEVER calls sys.exit. Always returns normally.
 # ---------------------------------------------------------------------------
 def run_task(task_id: str, use_llm: bool) -> Dict[str, Any]:
     # ── [START] ──────────────────────────────────────────────────────────
@@ -272,8 +265,11 @@ def run_task(task_id: str, use_llm: bool) -> Dict[str, Any]:
 
     try:
         sid, obs_dict = env_reset(task_id)
-    except Exception as exc:
-        # Server unreachable — emit [END] and return (no sys.exit)
+        if sid is None:
+            print(f"[END] success=false steps=0 rewards=", flush=True)
+            return {"task_id": task_id, "success": False, "steps": 0,
+                    "rewards": [], "grader_score": 0.0}
+    except Exception:
         print(f"[END] success=false steps=0 rewards=", flush=True)
         return {"task_id": task_id, "success": False, "steps": 0,
                 "rewards": [], "grader_score": 0.0}
@@ -286,13 +282,13 @@ def run_task(task_id: str, use_llm: bool) -> Dict[str, Any]:
 
         # Choose action
         action: Dict[str, Any] = {}
-        if use_llm:
-            try:
+        try:
+            if use_llm:
                 obs_text = env_render(sid)
                 if obs_text:
                     action = llm_action(obs_text, task_id)
-            except Exception:
-                action = {}
+        except Exception:
+            action = {}
 
         if not action or "action_type" not in action:
             action = heuristic_action(obs_dict, task_id)
@@ -308,7 +304,11 @@ def run_task(task_id: str, use_llm: bool) -> Dict[str, Any]:
             per_step_rewards.append(0.0)
 
         # ── [STEP] ───────────────────────────────────────────────────────
-        action_str = json.dumps(action, separators=(",", ":"))
+        try:
+            action_str = json.dumps(action, separators=(",", ":"))
+        except Exception:
+            action_str = '{"action_type":"wait"}'
+
         print(
             f"[STEP] step={step_num} action={action_str} "
             f"reward={r_val:.2f} done={str(done).lower()} error={error_str}",
@@ -340,58 +340,64 @@ def run_task(task_id: str, use_llm: bool) -> Dict[str, Any]:
         "grader_score": grader_score,
     }
 
-
 # ---------------------------------------------------------------------------
-# Summary — written to stderr so it never pollutes stdout log parsing
+# Summary (stderr — never pollutes stdout log format)
 # ---------------------------------------------------------------------------
 def _print_summary(results: List[Dict]) -> None:
-    diff_lbl = {
-        "task1_prioritization":       "EASY  ",
-        "task2_resource_allocation":  "MEDIUM",
-        "task3_dynamic_coordination": "HARD  ",
-    }
-    lines = [
-        "",
-        "╔═════════════════════════════════════════════════════════╗",
-        "║    DISASTER RESPONSE — BASELINE INFERENCE SUMMARY      ║",
-        "╠═════════════════════════════════════════════════════════╣",
-    ]
-    for r in results:
-        bar = "█" * int(r["grader_score"] * 28) + "░" * (28 - int(r["grader_score"] * 28))
-        d   = diff_lbl.get(r["task_id"], "      ")
-        lines.append(f"║ {d} │ {r['task_id'][:23]:<23} │ {bar} {r['grader_score']:.4f} ║")
-    lines.append("╠═════════════════════════════════════════════════════════╣")
-    overall = sum(r["grader_score"] for r in results) / max(len(results), 1)
-    bar     = "█" * int(overall * 28) + "░" * (28 - int(overall * 28))
-    lines.append(f"║ OVERALL │ {'':23} │ {bar} {overall:.4f} ║")
-    lines.append("╚═════════════════════════════════════════════════════════╝")
-    print("\n".join(lines), file=sys.stderr, flush=True)
-
+    try:
+        diff_lbl = {
+            "task1_prioritization":       "EASY  ",
+            "task2_resource_allocation":  "MEDIUM",
+            "task3_dynamic_coordination": "HARD  ",
+        }
+        lines = [
+            "",
+            "╔════════════════════════════════════════════════════════╗",
+            "║    DISASTER RESPONSE — BASELINE INFERENCE SUMMARY     ║",
+            "╠════════════════════════════════════════════════════════╣",
+        ]
+        for r in results:
+            bar = "█" * int(r["grader_score"] * 28) + "░" * (28 - int(r["grader_score"] * 28))
+            d   = diff_lbl.get(r["task_id"], "      ")
+            lines.append(f"║ {d} │ {r['task_id'][:23]:<23} │ {bar} {r['grader_score']:.4f} ║")
+        lines.append("╠════════════════════════════════════════════════════════╣")
+        overall = sum(r["grader_score"] for r in results) / max(len(results), 1)
+        bar     = "█" * int(overall * 28) + "░" * (28 - int(overall * 28))
+        lines.append(f"║ OVERALL │ {'':23} │ {bar} {overall:.4f} ║")
+        lines.append("╚════════════════════════════════════════════════════════╝")
+        print("\n".join(lines), file=sys.stderr, flush=True)
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
-# Main — NEVER raises, NEVER calls sys.exit
+# Main — NEVER raises, NEVER calls sys.exit, always exits 0
 # ---------------------------------------------------------------------------
 def main() -> None:
-    use_llm = bool(HF_TOKEN) and HF_TOKEN not in ("", "sk-no-key-heuristic-mode")
+    use_llm = _HAS_OPENAI and bool(HF_TOKEN)
 
     print(
-        f"# Disaster Response — Inference v2.2  "
-        f"model={MODEL_NAME}  seed={SEED}  llm={use_llm}  server={API_BASE_URL}",
+        f"# Disaster Response v2.5  model={MODEL_NAME}  seed={SEED}  "
+        f"llm={use_llm}  requests={_HAS_REQUESTS}  openai={_HAS_OPENAI}  "
+        f"server={API_BASE_URL}",
         file=sys.stderr, flush=True,
     )
 
-    # Wait for the OpenEnv server to be ready (retry up to 120s)
-    server_ready = _wait_for_server(max_wait=120)
-    if not server_ready:
-        print(
-            f"# WARNING: server not ready after 120s — running in degraded mode",
-            file=sys.stderr, flush=True,
-        )
-        # Still emit valid [START]/[END] for every task so parser gets output
+    # If requests not available, emit [END] for all tasks and exit cleanly
+    if not _HAS_REQUESTS:
+        print("# WARNING: requests not installed — emitting empty results", file=sys.stderr, flush=True)
         for task_id in TASKS:
             print(f"[START] task={task_id} env={ENV_NAME} model={MODEL_NAME}", flush=True)
             print(f"[END] success=false steps=0 rewards=", flush=True)
-        return   # return, not sys.exit
+        return
+
+    # Wait for server (up to 120 s)
+    server_ready = _wait_for_server(max_wait=120)
+    if not server_ready:
+        print("# WARNING: server not ready — emitting empty results", file=sys.stderr, flush=True)
+        for task_id in TASKS:
+            print(f"[START] task={task_id} env={ENV_NAME} model={MODEL_NAME}", flush=True)
+            print(f"[END] success=false steps=0 rewards=", flush=True)
+        return
 
     results: List[Dict] = []
     for task_id in TASKS:
@@ -408,7 +414,7 @@ def main() -> None:
         time.sleep(0.1)
 
     _print_summary(results)
-    # Normal return — exit code 0
+    # Normal return → exit code 0
 
 
 if __name__ == "__main__":
