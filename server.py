@@ -461,7 +461,7 @@ def demo(task: str = "task3_dynamic_coordination"):
 def list_tasks():
     return {
         "tasks": [
-            {"id":"task1_prioritization","name":"Incident Prioritization","difficulty":"easy","max_steps":10,"baseline_score":1.00},
+            {"id":"task1_prioritization","name":"Incident Prioritization","difficulty":"easy","max_steps":10,"baseline_score":0.9999},
             {"id":"task2_resource_allocation","name":"Resource Allocation","difficulty":"medium","max_steps":20,"baseline_score":0.61},
             {"id":"task3_dynamic_coordination","name":"Dynamic Coordination","difficulty":"hard","max_steps":30,"baseline_score":0.27},
         ]
@@ -522,6 +522,19 @@ def state(session_id: str):
     return env.state()
 
 
+def _safe_score(x: float) -> float:
+    """Clamp score to strictly open interval (0, 1) as required by the validator."""
+    try:
+        x = float(x)
+    except Exception:
+        x = 0.5
+    if x <= 0.0:
+        return 0.0001
+    if x >= 1.0:
+        return 0.9999
+    return round(x, 4)
+
+
 @app.get("/grade/{session_id}", tags=["openenv"])
 def grade(session_id: str):
     env = _sessions.get(session_id)
@@ -529,8 +542,11 @@ def grade(session_id: str):
         raise HTTPException(404, "Session not found.")
     result      = env.grade()
     description = env.grade_description()
+    # Clamp grader_score to strictly open interval (0, 1) — validator rejects 0.0 or 1.0
+    safe = _safe_score(result.grader_score)
+    result.grader_score = safe
     return {"session_id": session_id, "result": result.model_dump(),
-            "grader_score": result.grader_score, "description": description}
+            "grader_score": safe, "description": description}
 
 
 @app.delete("/session/{session_id}", tags=["openenv"])

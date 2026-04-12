@@ -172,7 +172,7 @@ class Task1Environment:
             bonus = max(0.0, 0.05 * (1.0 - var * 10))
         else:
             bonus = 0.0
-        grader = round(min(avg + bonus, 1.0), 4)
+        grader = round(max(0.0001, min(0.9999, avg + bonus)), 4)
 
         bd = GraderBreakdown(
             efficiency=0.0,

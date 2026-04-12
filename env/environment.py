@@ -45,11 +45,14 @@ class DisasterResponseEnv:
 
     def grade(self) -> EpisodeResult:
         result = self._task_env.grade()
-        result.grader_score = self._grader.grade(result)
+        raw = self._grader.grade(result)
+        result.grader_score = round(max(0.0001, min(0.9999, float(raw))), 4)
+        self._cached_result = result
         return result
 
     def grade_description(self) -> str:
-        return self._grader.describe(self._task_env.grade())
+        result = getattr(self, "_cached_result", None) or self._task_env.grade()
+        return self._grader.describe(result)
 
     def render(self) -> str:
         if self._obs is None:

@@ -236,14 +236,14 @@ class Task3Environment:
             coverage=round(resolution_rate, 4),
             fairness=round(fairness_score, 4),
         )
-        grader = round(max(0.0, (
+        grader = round(max(0.0001, min(0.9999, (
             0.30 * resolution_rate
             + 0.25 * severity_score
             + 0.20 * time_score
             + 0.15 * eff
             + 0.10 * fairness_score
             - cascade_penalty
-        )), 4)
+        ))), 4)
 
         return EpisodeResult(
             task_id=TASK_ID, difficulty=TaskDifficulty.HARD,

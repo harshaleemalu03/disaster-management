@@ -525,7 +525,7 @@ class RewardBreakdown(BaseModel):
             - 0.02 * self.wrong_assignment_penalty
             - 0.05 * self.cascade_penalty
         )
-        return round(min(max(raw, 0.0), 1.0), 4)
+        return round(max(0.0001, min(0.9999, raw)), 4)
 
 
 class Reward(BaseModel):
@@ -552,7 +552,8 @@ class Reward(BaseModel):
     @staticmethod
     def invalid(reason: str) -> "Reward":
         bd = RewardBreakdown(wrong_assignment_penalty=1.0)
-        return Reward(value=bd.compute_value(), breakdown=bd, explanation=reason)
+        val = round(max(0.0001, min(0.9999, bd.compute_value())), 4)
+        return Reward(value=val, breakdown=bd, explanation=reason)
 
 
 # ── Grader result ─────────────────────────────────────────────────────────────
