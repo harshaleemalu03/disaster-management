@@ -47,11 +47,11 @@ class DisasterResponseEnv:
         result = self._task_env.grade()
         raw = self._grader.grade(result)
         result.grader_score = round(max(0.0001, min(0.9999, float(raw))), 4)
-        self._cached_result = result
+        self._cached_grade = result
         return result
 
     def grade_description(self) -> str:
-        result = getattr(self, "_cached_result", None) or self._task_env.grade()
+        result = getattr(self, "_cached_grade", None) or self._task_env.grade()
         return self._grader.describe(result)
 
     def render(self) -> str:
